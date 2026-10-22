@@ -186,7 +186,12 @@ def cmd_list(args, inv) -> None:
             continue
         cadence = inv["cadence_days"].get(e["kind"])
         for cfg in e["configs"] or ["-"]:
-            last = seen.get((name, cfg))
+            if e["configs"]:
+                last = seen.get((name, cfg))
+            else:
+                # Held outside Doppler (GitHub or Railway only): any config the
+                # ledger recorded it under counts.
+                last = max((at for (n, _), at in seen.items() if n == name), default=None)
             if last:
                 age = (today - dt.datetime.fromisoformat(last)).days
                 due = cadence is not None and age >= cadence
@@ -396,7 +401,7 @@ def cmd_rotate(args, inv) -> int:
         row = {
             "at": now(),
             "name": n,
-            "config": cfg,
+            "config": cfg if entries[n]["configs"] else "-",
             "kind": entries[n]["kind"],
             "mode": mode,
             "reason": args.reason,
