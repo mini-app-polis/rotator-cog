@@ -405,7 +405,9 @@ def cmd_rotate(args, inv) -> int:
             "revoked": state.get("revoked", False),
         }
         if state.get("new_key"):
-            row["aws_key_id"] = state["new_key"]
+            # The last four only, as the AWS console shows it: a whole key id
+            # is what secret scanners match, and the ledger is public.
+            row["aws_key_id_last4"] = state["new_key"][-4:]
         record(row)
     print(f"\nrecorded {len(done)} rotation(s) in {LEDGER.relative_to(ROOT)} — commit it")
     failed = [n for n, s in done.items() if s.get("verified") is False or not s.get("revoked")]
