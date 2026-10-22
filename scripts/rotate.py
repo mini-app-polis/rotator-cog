@@ -291,7 +291,8 @@ def cmd_rotate(args, inv) -> int:
         kind = e["kind"]
         print(f"\n== {n}")
         if kind in ("machine-key", "generated"):
-            value = pysecrets.token_urlsafe(32)  # no dots: routes as a machine key
+            # No dots in either part: a dotless credential routes as a machine key.
+            value = inv.get("key_prefix", {}).get(cfg, "") + pysecrets.token_urlsafe(32)
             doppler_set(project, cfg, n, value)
             for target, gh_name in github_targets(e, n, cfg):
                 gh_set(target, gh_name, value)

@@ -64,6 +64,14 @@ Add the secret to `inventory.yaml` in the same change that adds it to
 Doppler. `rotate.py check` exits non-zero when a secret-looking name in
 Doppler is missing from the inventory.
 
+Doppler puts a new name into Railway's shared variables, but a service only
+reads the names it references. In production the service's
+`.railway/railway.ts` declares the reference. Development is configured in
+the dashboard, so add the reference there by hand: on the development
+service, set the variable to `${{shared.NAME}}`. Otherwise development
+starts without the value, and a machine key logs
+`[identity] <machine> has no <NAME>; it cannot authenticate` at startup.
+
 ## Compromise runbook
 
 Use this when a place that holds our secrets is breached. The first use
