@@ -38,6 +38,7 @@ import os
 import secrets as pysecrets
 import subprocess
 import sys
+import urllib.parse
 from pathlib import Path
 
 import yaml
@@ -450,6 +451,74 @@ def cmd_verify(args, inv) -> int:
     return 1 if failed else 0
 
 
+def _with_password(url: str, password: str, host_from: str | None = None) -> str:
+    """``url`` with its password replaced; optionally its host:port taken from ``host_from``."""
+    parts = urllib.parse.urlsplit(url)
+    where = urllib.parse.urlsplit(host_from) if host_from else parts
+    host = where.hostname + (f":{where.port}" if where.port else "")
+    return parts._replace(netloc=f"{parts.username}:{password}@{host}").geturl()
+
+
+def cmd_pg_roles(args, inv) -> int:
+    """Rotate the passwords of the roles behind a Postgres entry's database URLs.
+
+    Railway's Regenerate changes only the postgres superuser. Each URL in the
+    entry's `also` list connects as its own role (its username); this sets a
+    new password on that role and writes the URL back with it. The superuser
+    connection is pasted at a hidden prompt (the service's DATABASE_PUBLIC_URL).
+    """
+    project, cfg = inv["doppler_project"], args.config
+    e = entry(inv, args.name)
+    urls = e.get("also", [])
+    if not urls:
+        sys.exit(f"{args.name} lists no database URLs under also:")
+    admin = getpass.getpass("paste the superuser DATABASE_PUBLIC_URL (hidden): ").strip()
+    run(["psql", admin, "-qAtc", "select 1"])
+    by = run(["git", "-C", str(ROOT), "config", "user.email"]).strip() or os.environ.get("USER", "")
+    for var in urls:
+        current = run(
+            ["doppler", "secrets", "get", var, "--project", project, "--config", cfg, "--plain"]
+        ).strip()
+        role = urllib.parse.urlsplit(current).username
+        if not role or role == "postgres":
+            print(f"{var}: connects as {role!r}, not a dedicated role; skipped")
+            continue
+        password = pysecrets.token_hex(24)
+        run(
+            ["psql", admin, "-v", "ON_ERROR_STOP=1", "-q"],
+            stdin=f"ALTER ROLE \"{role}\" PASSWORD '{password}';\n",
+        )
+        doppler_set(project, cfg, var, _with_password(current, password))
+        # The URL's own host is private (*.railway.internal); check over the admin's public host.
+        ok = (
+            subprocess.run(
+                ["psql", _with_password(current, password, host_from=admin), "-qAtc", "select 1"],
+                capture_output=True,
+                text=True,
+                check=False,
+            ).returncode
+            == 0
+        )
+        del password
+        print(f"{var}: role {role} rotated, {'verified' if ok else 'VERIFY FAILED'}")
+        record(
+            {
+                "at": now(),
+                "name": var,
+                "config": cfg,
+                "kind": "postgres-role",
+                "role": role,
+                "mode": "compromised" if args.compromised else "routine",
+                "reason": args.reason,
+                "by": by,
+                "verified": ok,
+                "revoked": True,
+            }
+        )
+    print(f"Redeploy: {', '.join(e['redeploy'])}")
+    return 0
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -481,6 +550,12 @@ def main() -> int:
     pv.add_argument("--kind")
     pv.add_argument("--config", default="prd")
 
+    pp = sub.add_parser("pg-roles", help="rotate the role passwords behind a Postgres entry's URLs")
+    pp.add_argument("name", help="a Postgres entry, e.g. POSTGRES_KAIANOLEVINE_PASSWORD")
+    pp.add_argument("--reason", required=True)
+    pp.add_argument("--compromised", action="store_true")
+    pp.add_argument("--config", default="prd")
+
     args = p.parse_args()
     inv = load_inventory()
     if args.cmd == "list":
@@ -488,6 +563,8 @@ def main() -> int:
         return 0
     if args.cmd == "check":
         return cmd_check(args, inv)
+    if args.cmd == "pg-roles":
+        return cmd_pg_roles(args, inv)
     if args.cmd == "verify":
         return cmd_verify(args, inv)
     return cmd_rotate(args, inv)
