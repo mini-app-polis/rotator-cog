@@ -414,6 +414,42 @@ def cmd_rotate(args, inv) -> int:
     return 0
 
 
+def cmd_verify(args, inv) -> int:
+    """Re-run the checks for secrets already rotated, and record the result."""
+    project, cfg = inv["doppler_project"], args.config
+    names = list(args.names) or [
+        n
+        for n, e in inv["secrets"].items()
+        if (not args.kind or e["kind"] == args.kind)
+        and cfg in e.get("configs", ["prd"])
+        and (e.get("verify") or e["kind"] == "machine-key")
+    ]
+    by = run(["git", "-C", str(ROOT), "config", "user.email"]).strip() or os.environ.get("USER", "")
+    failed = []
+    for n in names:
+        e = entry(inv, n)
+        command = e.get("verify") or (machine_verify(inv, n, cfg) if e["kind"] == "machine-key" else None)
+        if not command:
+            print(f"{n}: no automatic check")
+            continue
+        ok = verify(project, cfg, command)
+        print(f"{n}: {'verified' if ok else 'VERIFY FAILED'}")
+        record(
+            {
+                "at": now(),
+                "name": n,
+                "config": cfg,
+                "kind": e["kind"],
+                "mode": "verify",
+                "by": by,
+                "verified": ok,
+            }
+        )
+        if not ok:
+            failed.append(n)
+    return 1 if failed else 0
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -440,6 +476,11 @@ def main() -> int:
     )
     pr.add_argument("--dry-run", action="store_true")
 
+    pv = sub.add_parser("verify", help="re-run checks for rotated secrets and record the result")
+    pv.add_argument("names", nargs="*")
+    pv.add_argument("--kind")
+    pv.add_argument("--config", default="prd")
+
     args = p.parse_args()
     inv = load_inventory()
     if args.cmd == "list":
@@ -447,6 +488,8 @@ def main() -> int:
         return 0
     if args.cmd == "check":
         return cmd_check(args, inv)
+    if args.cmd == "verify":
+        return cmd_verify(args, inv)
     return cmd_rotate(args, inv)
 
 
