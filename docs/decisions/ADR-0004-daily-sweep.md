@@ -27,7 +27,8 @@ takes two rounds of redeploys.
      development API. At seven days a key still in use is retired anyway
      and the run says which machine was still on it;
   2. rotates the most overdue key, one per run, and only on a day that
-     retired nothing;
+     retired nothing; a key its services are not ready for is reported
+     and passed over for the next;
   3. reports names in Doppler that look secret and have no inventory
      entry, and entries the config should hold but does not.
 - The sweep rotates only when `ROTATOR_SWEEP_ROTATE` is `true`. Unset, it

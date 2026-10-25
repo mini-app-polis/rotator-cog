@@ -212,7 +212,7 @@ class FakeApi:
         return self.last
 
 
-def _run(fake: FakeDoppler, api: FakeApi, posted: list) -> list[Any]:
+def _run(fake: FakeDoppler, api: FakeApi, posted: list, check: Any = None) -> list[Any]:
     steps: list[Any] = []
 
     def redeploy(cfg: str, targets: Any) -> None:
@@ -228,7 +228,7 @@ def _run(fake: FakeDoppler, api: FakeApi, posted: list) -> list[Any]:
             project, cfg, token, transport=httpx.MockTransport(fake.handle)
         ),
         redeploy_factory=lambda: redeploy,
-        checker_factory=lambda: lambda cfg, needs: [],
+        checker_factory=lambda: check or (lambda cfg, needs: []),
         verifier_factory=lambda inventory: lambda *a: None,
         recorder_factory=lambda: lambda event: steps.append(("record", event)),
         now=lambda: NOW,
@@ -277,6 +277,35 @@ def test_a_run_rotates_the_most_overdue_key_and_keeps_the_old_one_accepted(
     # A manual entry is never rotated by the sweep.
     assert "OPENAI_API_KEY" not in fake.secrets
     assert not [w for w in fake.writes() if "OPENAI" in str(w)]
+
+
+def test_a_key_the_services_are_not_ready_for_is_passed_over(posted: list) -> None:
+    """The most overdue key cannot hold up the rest: it is reported, and the
+    next most overdue is rotated."""
+    fake = FakeDoppler({"DEEJAY_COG_API_KEY": "old-d", "WATCHER_COG_API_KEY": "old-w"})
+    api = FakeApi(
+        [
+            _event("DEEJAY_COG_API_KEY", age=dt.timedelta(days=95), retired=NOW),
+            _event("WATCHER_COG_API_KEY", age=dt.timedelta(days=120), retired=NOW),
+        ]
+    )
+    asked: list[str] = []
+
+    def check(cfg: str, needs: Any) -> list[str]:
+        asked.append(next(iter(needs["api-kaianolevine-com"])))
+        return (
+            ["db-poller is not in Railway production"] if "db-poller" in needs else []
+        )
+
+    steps = _run(fake, api, posted, check)
+    assert fake.secrets["WATCHER_COG_API_KEY"] == "old-w"
+    assert fake.secrets["DEEJAY_COG_API_KEY"] != "old-d"
+    (record,) = [s[1] for s in steps if s[0] == "record"]
+    assert record.name == "DEEJAY_COG_API_KEY"
+    assert asked[:2] == ["WATCHER_COG_API_KEY", "DEEJAY_COG_API_KEY"]
+    ((args, kwargs),) = posted
+    assert "not ready to rotate" in kwargs["text"]
+    assert "WATCHER_COG_API_KEY in prd" in kwargs["text"]
 
 
 def test_a_run_that_retires_rotates_nothing_that_day(posted: list) -> None:

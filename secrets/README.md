@@ -92,7 +92,9 @@ A daily sweep per config (14:00 UTC) does the rest:
 - **Rotates the most overdue key**, one per config per day, on a day that
   retired nothing, once `ROTATOR_SWEEP_ROTATE` is `true` in Doppler prd.
   Until then it only reports what is due. A key mid-handover is not rotated again, and one whose
-  last rotation failed is reported each day rather than retried.
+  last rotation failed is reported each day rather than retried. A key the
+  services are not ready for is reported "not ready to rotate" and passed
+  over for the next most overdue, so it cannot hold up the rest.
 - **Reports drift**, as `rotate.py check` does, in the run report.
 
 In development, a service reads only the shared variables referenced on
