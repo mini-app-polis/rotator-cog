@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import httpx
 import pytest
 from mini_app_polis.api.contract import RotationRequest
+from test_doppler import FakeDoppler
 
-from rotator_cog import worker
+from rotator_cog import doppler, worker
 
 #: A stand-in token; tests check it never reaches an error or a report.
 TOKEN = "dp.st.token-for-tests"
@@ -18,7 +20,15 @@ INVENTORY = {
         "DEEJAY_COG_API_KEY": {"kind": "machine-key", "configs": ["prd", "dev"]},
         "TICK_SECRET": {"kind": "generated"},
         "OPENAI_API_KEY": {"kind": "manual"},
-    }
+        "CI_VALIDATOR_API_KEY": {
+            "kind": "machine-key",
+            "configs": ["prd", "dev"],
+            "github": ["org:mini-app-polis"],
+        },
+        "GITHUB_WEBHOOK_SECRET": {"kind": "generated", "steps": "paste it"},
+    },
+    "doppler_project": "proj",
+    "key_prefix": {"dev": "dev_"},
 }
 
 
@@ -94,6 +104,8 @@ def test_a_job_for_a_listed_worker_kind_in_a_config_it_is_held_in_passes() -> No
         (_job("OPENAI_API_KEY"), "kind manual is not rotated by the worker"),
         # No configs means prd only.
         (_job("TICK_SECRET", "dev"), "not held in dev"),
+        (_job("CI_VALIDATOR_API_KEY"), "also held in GitHub"),
+        (_job("GITHUB_WEBHOOK_SECRET"), "needs a manual step"),
     ],
 )
 def test_a_job_the_worker_cannot_rotate_is_refused(
@@ -185,6 +197,134 @@ def test_a_token_that_cannot_be_read_fails_the_job(posted: list[tuple]) -> None:
             token_reader=token_reader,
         )
     assert len(posted) == 1
+
+
+# -- minting and the handover ---------------------------------------------
+
+
+def test_minting_follows_the_configs_prefix() -> None:
+    assert worker.mint(INVENTORY, "dev").startswith("dev_")
+    prd = worker.mint(INVENTORY, "prd")
+    assert not prd.startswith("dev_") and "." not in prd and len(prd) == 43
+
+
+class Report:
+    def __init__(self) -> None:
+        self.lines: list[tuple[str, str]] = []
+
+    def issue(self, reason: str, item: str | None = None, **kw: Any) -> None:
+        self.lines.append(("issue", reason))
+
+    def updated(self, kind: str, item: str) -> None:
+        self.lines.append(("updated", kind))
+
+
+def _handover(
+    fake: FakeDoppler,
+    mode: str = "routine",
+    *,
+    config: str = "dev",
+    ok: bool = True,
+    redeploy_fails: bool = False,
+) -> tuple[Report, list[Any]]:
+    """Run a job through _rotate, recording each step against Doppler's state."""
+    steps: list[Any] = []
+    report = Report()
+
+    def redeploy(entry: Any, cfg: str) -> None:
+        steps.append(("redeploy", dict(fake.secrets)))
+        if redeploy_fails:
+            raise RuntimeError("redeploy failed")
+
+    def verify(name: str, entry: Any, cfg: str, value: str) -> bool:
+        steps.append(("verify", value == fake.secrets[name]))
+        return ok
+
+    job = RotationRequest(name="DEEJAY_COG_API_KEY", config=config, mode=mode)  # type: ignore[arg-type]
+    worker._rotate(
+        job,
+        INVENTORY["secrets"]["DEEJAY_COG_API_KEY"],
+        TOKEN,
+        inventory=INVENTORY,
+        report=report,
+        redeploy=redeploy,
+        verify=verify,
+        doppler_factory=lambda project, cfg, token: doppler.Doppler(
+            project, cfg, token, transport=httpx.MockTransport(fake.handle)
+        ),
+    )
+    return report, steps
+
+
+def test_a_routine_rotation_hands_over_in_two_phases() -> None:
+    fake = FakeDoppler({"DEEJAY_COG_API_KEY": "old"})
+    report, steps = _handover(fake)
+    new = fake.secrets["DEEJAY_COG_API_KEY"]
+    assert new.startswith("dev_") and new != "old"
+    # Phase 1: the API is redeployed knowing both, callers still on the old key.
+    assert steps[0] == (
+        "redeploy",
+        {"DEEJAY_COG_API_KEY": "old", "DEEJAY_COG_API_KEY_PREVIOUS": new},
+    )
+    # Phase 2: callers switch, the old key stays accepted.
+    assert steps[1] == (
+        "redeploy",
+        {"DEEJAY_COG_API_KEY": new, "DEEJAY_COG_API_KEY_PREVIOUS": "old"},
+    )
+    assert steps[2] == ("verify", True)
+    assert report.lines == [("updated", "rotated")]
+
+
+def test_a_compromised_rotation_is_one_write_with_no_previous_slot() -> None:
+    fake = FakeDoppler(
+        {"DEEJAY_COG_API_KEY": "old", "DEEJAY_COG_API_KEY_PREVIOUS": "older"}
+    )
+    report, steps = _handover(fake, "compromised", config="prd")
+    new = fake.secrets["DEEJAY_COG_API_KEY"]
+    assert fake.secrets == {"DEEJAY_COG_API_KEY": new} and not new.startswith("dev_")
+    assert [s[0] for s in steps] == ["redeploy", "verify"]
+    assert len(fake.writes()) == 1
+    assert report.lines == [("updated", "rotated")]
+
+
+def test_a_failed_verification_is_reported() -> None:
+    report, _ = _handover(FakeDoppler({"DEEJAY_COG_API_KEY": "old"}), ok=False)
+    assert report.lines == [("issue", "verification failed")]
+
+
+def test_a_failed_redeploy_stops_before_callers_switch() -> None:
+    fake = FakeDoppler({"DEEJAY_COG_API_KEY": "old"})
+    with pytest.raises(RuntimeError, match="redeploy failed"):
+        _handover(fake, redeploy_fails=True)
+    assert fake.secrets["DEEJAY_COG_API_KEY"] == "old"
+
+
+def test_a_secret_missing_from_doppler_is_reported_and_nothing_is_written() -> None:
+    fake = FakeDoppler()
+    report, steps = _handover(fake)
+    assert report.lines == [("issue", "not in Doppler")]
+    assert steps == [] and fake.writes() == []
+
+
+def test_without_redeploy_and_verify_nothing_is_written() -> None:
+    report = Report()
+    worker._rotate(
+        _job(config="dev"),
+        INVENTORY["secrets"]["DEEJAY_COG_API_KEY"],
+        TOKEN,
+        inventory=INVENTORY,
+        report=report,
+        doppler_factory=lambda *a: pytest.fail("Doppler reached"),
+    )
+    assert report.lines == [("issue", "rotation not built yet")]
+
+
+def test_no_value_reaches_a_log_line(caplog: pytest.LogCaptureFixture) -> None:
+    fake = FakeDoppler({"DEEJAY_COG_API_KEY": "old"})
+    with caplog.at_level("DEBUG"):
+        _handover(fake)
+    logged = caplog.text
+    assert fake.secrets["DEEJAY_COG_API_KEY"] not in logged and TOKEN not in logged
 
 
 # -- messages and the handler ----------------------------------------------
