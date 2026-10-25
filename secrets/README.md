@@ -8,9 +8,13 @@ environment. GitHub Actions secrets hold a few values of their own.
 - `inventory.yaml`: every credential by name. It records what each one
   can do, where it is held, how to rotate it and how to check the new
   value. It never holds a value.
-- `rotations.jsonl`: the record of every rotation, one line each,
-  appended by `scripts/rotate.py` and committed. Git history is the audit
-  trail.
+- The record of every rotation is kept by the API, not here: one event
+  per rotation of a secret in a Doppler config, at
+  `/v1/secrets/rotation-events`. `scripts/rotate.py` writes it under your
+  own identity and reads it back to say what is due.
+- `rotations.jsonl`: the record from before the API kept one. Nothing
+  writes to it. `rotate.py import-ledger` seeds the API from it, and it
+  stays until that import has run against production.
 - `../scripts/rotate.py`: does the rotation.
 
 ## Using it
@@ -24,6 +28,14 @@ uv run scripts/rotate.py rotate --kind machine-key --reason "routine" --dry-run
 
 Prerequisites on the Mac: `doppler` (logged in), `aws` (profile
 `miniapppolis`), `gh` (logged in with `admin:org` for org secrets), `curl`.
+
+Reading or writing the record (`list`, `rotate`, `verify`, `pg-roles`,
+`import-ledger`) asks for a Clerk session token at a hidden prompt: the API
+records the rotation as you, and a session is how a person signs in to it.
+On a page signed in to the wcs Clerk tenant, run
+`await Clerk.session.getToken()` in the browser console and paste the
+result. A token lasts about a minute, so the script asks again when the API
+says it has expired.
 
 Each run:
 
@@ -40,7 +52,10 @@ Each run:
 4. **Revoke the old value.** Old AWS keys are deleted automatically. For
    console-issued values the script prints the step and asks for
    confirmation.
-5. **Record.** One line per secret goes into `rotations.jsonl`.
+5. **Record.** One event per secret goes to the API. A rotation is
+   `ok` only if its check passed; one with no automatic check is recorded
+   `failed`, saying no check ran. `verify` re-runs the checks later and
+   rewrites the latest event's result.
 
 There are two modes:
 
@@ -57,6 +72,17 @@ syncs and closes when `api-kaianolevine-com` redeploys. The Lambda cog
 picks up its new key on its next invocation. Zero-downtime rotation needs
 the API to accept `<NAME>_API_KEY_PREVIOUS` during an overlap. That is
 not built yet.
+
+### Importing the legacy record
+
+`uv run scripts/rotate.py import-ledger --dry-run` prints what the import
+would send. Without `--dry-run` it sends it, then reads the latest event
+per secret and config back and checks each imported one is there. It sends
+only the latest rotation per secret and config, prd and dev: a re-check row
+decides that rotation's result, and rows with no Doppler config, rows for
+database URL variables (`postgres-role`) and names no longer in the
+inventory are left out, each counted. Events are keyed on secret, config
+and when the value was minted, so running it again adds nothing.
 
 ## Adding a secret
 

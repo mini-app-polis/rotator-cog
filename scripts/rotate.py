@@ -9,10 +9,14 @@
     uv run scripts/rotate.py check [--config prd]
     uv run scripts/rotate.py rotate NAME [NAME ...] --reason TEXT [--compromised] [--config prd] [--dry-run]
     uv run scripts/rotate.py rotate --tier 1 --kind machine-key --reason TEXT ...
+    uv run scripts/rotate.py import-ledger [--dry-run]
 
-secrets/inventory.yaml says what each secret is and how to rotate it;
-secrets/rotations.jsonl is the record, one line per rotation, appended here
-and committed. Neither file ever holds a value.
+secrets/inventory.yaml says what each secret is and how to rotate it. The
+API keeps the record: one event per rotation, written here through
+POST /v1/secrets/rotation-events under the owner's own identity (a Clerk
+session token pasted at a hidden prompt). secrets/rotations.jsonl is the
+record from before the API kept one; import-ledger seeds the API from it,
+and nothing writes to it. None of these ever holds a value.
 
 Values never pass through stdout, an argument list or a file: a minted value
 goes to Doppler (and to GitHub secrets) on stdin, a pasted value is read
@@ -46,6 +50,13 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 INVENTORY = ROOT / "secrets" / "inventory.yaml"
 LEDGER = ROOT / "secrets" / "rotations.jsonl"
+
+# The repository's own package, standard library only: the record's client,
+# the events it writes, and the ledger import.
+sys.path.insert(0, str(ROOT / "src"))
+from rotator_cog import api as record_api  # noqa: E402
+from rotator_cog import events, legacy  # noqa: E402
+
 AWS_PROFILE = os.environ.get("AWS_PROFILE", "miniapppolis")
 USER_AGENT = "mini-app-polis-rotate/1"  # Cloudflare blocks default library UAs
 
@@ -71,6 +82,7 @@ def entry(inv: dict, name: str) -> dict:
 
 
 def ledger() -> list[dict]:
+    """The legacy record's rows: import-ledger's input, and nothing else's."""
     if not LEDGER.exists():
         return []
     return [
@@ -78,21 +90,31 @@ def ledger() -> list[dict]:
     ]
 
 
-def last_rotated(rows: list[dict]) -> dict[tuple[str, str], str]:
-    out: dict[tuple[str, str], str] = {}
-    for r in rows:
-        key = (r["name"], r["config"])
-        out[key] = max(out.get(key, ""), r["at"])
-    return out
+TOKEN_HELP = (
+    "The API records rotations as you, and you sign in to it with a Clerk\n"
+    "session token. On a page signed in to the wcs Clerk tenant, run\n"
+    "`await Clerk.session.getToken()` in the browser console and paste the\n"
+    "result. It lasts about a minute; you are asked again when it expires."
+)
 
 
-def record(row: dict) -> None:
-    with LEDGER.open("a") as f:
-        f.write(json.dumps(row, sort_keys=True) + "\n")
+def record_api_for(args) -> record_api.RotationEvents:
+    """The rotation record, as the person running this script."""
+    shown = []
+
+    def token() -> str:
+        if not shown:
+            print(TOKEN_HELP, file=sys.stderr)
+            shown.append(True)
+        return getpass.getpass("session token (hidden, blank to stop): ")
+
+    return record_api.RotationEvents(args.api, token)
 
 
-def now() -> str:
-    return dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat()
+def actor() -> str:
+    return run(
+        ["git", "-C", str(ROOT), "config", "user.email"]
+    ).strip() or os.environ.get("USER", "")
 
 
 # --------------------------------------------------------------------------
@@ -219,7 +241,7 @@ def confirm(prompt: str) -> bool:
 
 
 def cmd_list(args, inv) -> None:
-    seen = last_rotated(ledger())
+    seen = events.last_minted(record_api_for(args).list(latest=True))
     today = dt.datetime.now(dt.UTC)
     rows = []
     for name in inv["secrets"]:
@@ -233,8 +255,8 @@ def cmd_list(args, inv) -> None:
             if e["configs"]:
                 last = seen.get((name, cfg))
             else:
-                # Held outside Doppler (GitHub or Railway only): any config the
-                # ledger recorded it under counts.
+                # Held outside Doppler (GitHub or Railway only): any config a
+                # rotation was recorded under counts.
                 last = max(
                     (at for (n, _), at in seen.items() if n == name), default=None
                 )
@@ -415,6 +437,7 @@ def cmd_rotate(args, inv) -> int:
                     f"   REVOKE NOW: {e.get('revoke', 'revoke the old value at the provider')}"
                 )
                 state["revoked"] = confirm("   old value revoked?")
+        state["minted"] = events.now()
         done[n] = state
 
     if not done:
@@ -469,29 +492,27 @@ def cmd_rotate(args, inv) -> int:
             state["revoked"] = True  # one value at a time: overwriting it is the revoke
 
     # 5. record ---------------------------------------------------------------
-    by = run(
-        ["git", "-C", str(ROOT), "config", "user.email"]
-    ).strip() or os.environ.get("USER", "")
-    for n, state in done.items():
-        row = {
-            "at": now(),
-            "name": n,
-            "config": cfg if entries[n]["configs"] else "-",
-            "kind": entries[n]["kind"],
-            "mode": mode,
-            "reason": args.reason,
-            "by": by,
-            "verified": state.get("verified"),
-            "revoked": state.get("revoked", False),
-        }
-        if state.get("new_key"):
-            # The last four only, as the AWS console shows it: a whole key id
-            # is what secret scanners match, and the ledger is public.
-            row["aws_key_id_last4"] = state["new_key"][-4:]
-        record(row)
-    print(
-        f"\nrecorded {len(done)} rotation(s) in {LEDGER.relative_to(ROOT)} — commit it"
-    )
+    by = actor()
+    record = [
+        events.event(
+            name=n,
+            # A secret held outside Doppler is recorded under the config it
+            # was rotated for: the record has no other.
+            config=cfg,
+            kind=entries[n]["kind"],
+            mode=mode,
+            actor=by,
+            minted=state["minted"],
+            retired=events.now() if state.get("revoked") else None,
+            verified=state.get("verified"),
+            # The last four only, as the AWS console shows it: a whole key
+            # id is what secret scanners match.
+            aws_key_last4=state["new_key"][-4:] if state.get("new_key") else None,
+        )
+        for n, state in done.items()
+    ]
+    if not write_events(args, record):
+        return 1
     failed = [
         n for n, s in done.items() if s.get("verified") is False or not s.get("revoked")
     ]
@@ -511,9 +532,7 @@ def cmd_verify(args, inv) -> int:
         and cfg in e.get("configs", ["prd"])
         and (e.get("verify") or e["kind"] == "machine-key")
     ]
-    by = run(
-        ["git", "-C", str(ROOT), "config", "user.email"]
-    ).strip() or os.environ.get("USER", "")
+    api = record_api_for(args)
     failed = []
     for n in names:
         e = entry(inv, n)
@@ -525,17 +544,13 @@ def cmd_verify(args, inv) -> int:
             continue
         ok = verify(project, cfg, command)
         print(f"{n}: {'verified' if ok else 'VERIFY FAILED'}")
-        record(
-            {
-                "at": now(),
-                "name": n,
-                "config": cfg,
-                "kind": e["kind"],
-                "mode": "verify",
-                "by": by,
-                "verified": ok,
-            }
-        )
+        # A re-check is not a rotation: it rewrites the verification of the
+        # latest one, the event with the same key.
+        latest = api.list(name=n, config=cfg, latest=True)
+        if latest:
+            api.record(events.rechecked(latest[0], ok))
+        else:
+            print(f"   no rotation of {n} recorded for {cfg}; nothing to update")
         if not ok:
             failed.append(n)
     return 1 if failed else 0
@@ -566,9 +581,12 @@ def cmd_pg_roles(args, inv) -> int:
         "paste the superuser DATABASE_PUBLIC_URL (hidden): "
     ).strip()
     run(["psql", admin, "-qAtc", "select 1"])
-    by = run(
-        ["git", "-C", str(ROOT), "config", "user.email"]
-    ).strip() or os.environ.get("USER", "")
+    mode = "compromised" if args.compromised else "routine"
+    by = actor()
+    record = []
+    # The URL variables are the entry's `also` names, not entries of their
+    # own, so one event records the entry, unless a variable is an entry.
+    own: list[tuple[str, bool]] = []
     for var in urls:
         current = run(
             [
@@ -588,6 +606,7 @@ def cmd_pg_roles(args, inv) -> int:
             print(f"{var}: connects as {role!r}, not a dedicated role; skipped")
             continue
         password = pysecrets.token_hex(24)
+        minted = events.now()
         run(
             ["psql", admin, "-v", "ON_ERROR_STOP=1", "-q"],
             stdin=f"ALTER ROLE \"{role}\" PASSWORD '{password}';\n",
@@ -610,27 +629,68 @@ def cmd_pg_roles(args, inv) -> int:
         )
         del password
         print(f"{var}: role {role} rotated, {'verified' if ok else 'VERIFY FAILED'}")
-        record(
-            {
-                "at": now(),
-                "name": var,
-                "config": cfg,
-                "kind": "postgres-role",
-                "role": role,
-                "mode": "compromised" if args.compromised else "routine",
-                "reason": args.reason,
-                "by": by,
-                "verified": ok,
-                "revoked": True,
-            }
+        var_kind = inv["secrets"].get(var, {}).get("kind")
+        if var_kind in legacy.KINDS:
+            record.append(
+                events.event(
+                    name=var,
+                    config=cfg,
+                    kind=var_kind,
+                    mode=mode,
+                    actor=by,
+                    minted=minted,
+                    # ALTER ROLE ends the old password there and then.
+                    retired=events.now(),
+                    verified=ok,
+                )
+            )
+        else:
+            own.append((minted, ok))
+    if own:
+        record.append(
+            events.event(
+                name=args.name,
+                config=cfg,
+                kind=e["kind"],
+                mode=mode,
+                actor=by,
+                minted=own[0][0],
+                retired=events.now(),
+                verified=all(ok for _, ok in own),
+            )
         )
     print(f"Redeploy: {', '.join(e['redeploy'])}")
-    return 0
+    return 0 if write_events(args, record) else 1
+
+
+def write_events(args, record: list[dict]) -> bool:
+    """Write each event to the API; on a failure, say which were not written."""
+    api = record_api_for(args)
+    for i, ev in enumerate(record):
+        try:
+            api.record(ev)
+        except record_api.ApiError as exc:
+            print(f"\nthe API did not record these rotations ({exc}):")
+            for left in record[i:]:
+                print(f"   {legacy.describe(left)}")
+            return False
+    print(f"\nrecorded {len(record)} rotation(s) in the API")
+    return True
+
+
+def cmd_import_ledger(args, inv) -> int:
+    """Seed the API's record with the latest rotation per secret and config."""
+    api = None if args.dry_run else record_api_for(args)
+    return legacy.run(ledger(), inv, api, dry_run=args.dry_run)
 
 
 def main() -> int:
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    p.add_argument(
+        "--api",
+        help="the API that keeps the record (default: the inventory's api_base_url)",
     )
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -657,7 +717,9 @@ def main() -> int:
     pr.add_argument("--dry-run", action="store_true")
 
     pv = sub.add_parser(
-        "verify", help="re-run checks for rotated secrets and record the result"
+        "verify",
+        help="re-run checks for rotated secrets and record the result on the "
+        "latest rotation",
     )
     pv.add_argument("names", nargs="*")
     pv.add_argument("--kind")
@@ -673,11 +735,28 @@ def main() -> int:
     pp.add_argument("--compromised", action="store_true")
     pp.add_argument("--config", default="prd")
 
+    pi = sub.add_parser(
+        "import-ledger",
+        help="seed the API's record from secrets/rotations.jsonl: the latest "
+        "rotation per secret and config",
+    )
+    pi.add_argument("--dry-run", action="store_true")
+
     args = p.parse_args()
     inv = load_inventory()
+    args.api = args.api or inv["api_base_url"]
+    try:
+        return dispatch(args, inv)
+    except record_api.ApiError as exc:
+        sys.exit(f"the API refused: {exc}")
+
+
+def dispatch(args, inv) -> int:
     if args.cmd == "list":
         cmd_list(args, inv)
         return 0
+    if args.cmd == "import-ledger":
+        return cmd_import_ledger(args, inv)
     if args.cmd == "check":
         return cmd_check(args, inv)
     if args.cmd == "pg-roles":
