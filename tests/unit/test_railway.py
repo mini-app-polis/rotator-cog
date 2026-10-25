@@ -178,3 +178,11 @@ def test_a_non_json_answer_is_an_error() -> None:
             TOKEN,
             transport=httpx.MockTransport(lambda r: httpx.Response(502, text="x")),
         )
+
+
+def test_a_referenced_variable_that_renders_empty_counts_as_gone() -> None:
+    api = FakeApi()
+    api.variables = [{"KEY": VALUE, "KEY_PREVIOUS": ""}]
+    api.client().wait_for_variables(
+        "s-1", {"KEY": railway.digest(VALUE), "KEY_PREVIOUS": None}, timeout=6
+    )

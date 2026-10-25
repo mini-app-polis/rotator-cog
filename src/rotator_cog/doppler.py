@@ -77,6 +77,23 @@ class Doppler:
             raise DopplerError(f"{what}: unexpected response") from None
         return raw if isinstance(raw, str) and raw else None
 
+    def names(self) -> set[str]:
+        """Every secret name in this config (names only; no values are read)."""
+        what = f"list the names in {self.config}"
+        response = self._request(
+            what,
+            "GET",
+            "/v3/configs/config/secrets/names",
+            params={"project": self.project, "config": self.config},
+        )
+        if response.status_code != 200:
+            raise DopplerError(f"{what}: HTTP {response.status_code}")
+        try:
+            names = response.json()["names"]
+        except (ValueError, KeyError, TypeError):
+            raise DopplerError(f"{what}: unexpected response") from None
+        return {str(n) for n in names}
+
     def change(self, name: str, changes: list[dict[str, Any]]) -> None:
         """Apply ``changes`` in one request. The response is not kept."""
         what = f"write {name} in {self.config}"
@@ -127,3 +144,8 @@ def replace(doppler: Doppler, name: str, new: str) -> None:
     if doppler.get(previous) is not None:
         changes.append(_delete(previous))
     doppler.change(name, changes)
+
+
+def retire(doppler: Doppler, names: list[str]) -> None:
+    """Delete these previous slots in one write."""
+    doppler.change(", ".join(names), [_delete(previous_name(name)) for name in names])
