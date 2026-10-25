@@ -40,6 +40,7 @@ NO_CHECK = "No check ran when this was rotated by hand."
 
 
 def now() -> str:
+    """The current UTC time to the second, as the ISO string an event carries."""
     return dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat()
 
 

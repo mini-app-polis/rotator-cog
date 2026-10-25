@@ -210,7 +210,7 @@ def test_a_valid_job_reads_its_configs_token_and_runs_every_step(
     read: list[str] = []
     _rotate(_job(config="dev"), read)
     assert read == ["dev"] and seen["token"] == TOKEN
-    for step in ("redeploy", "verify", "record"):
+    for step in ("redeploy", "verify", "record", "check"):
         assert callable(seen[step])
 
 
@@ -255,6 +255,7 @@ def _handover(
     config: str = "dev",
     ok: bool = True,
     redeploy_fails: bool = False,
+    check: Any = None,
 ) -> tuple[Report, list[Any]]:
     """Run a job through _rotate, recording each redeploy against Doppler's state."""
     steps: list[Any] = []
@@ -288,6 +289,7 @@ def _handover(
             project, cfg, token, transport=httpx.MockTransport(fake.handle)
         ),
         now=lambda: NOW,
+        check=check,
     )
     return report, steps
 
@@ -437,7 +439,11 @@ class FakeRailway:
             "api-kaianolevine-com": "s-api",
             "db-poller": "s-poll",
         }
+        self.variables: dict[str, set[str]] = {"s-api": {KEY, PREV}, "s-poll": {KEY}}
         self.calls: list[tuple] = []
+
+    def variable_names(self, service_id: str) -> set[str]:
+        return set(self.variables.get(service_id, set()))
 
     def environment_name(self) -> str:
         return self.environment
@@ -514,6 +520,83 @@ def test_the_railway_token_is_read_from_the_configs_parameter(
     assert ssm.calls[0]["Name"] == "/rotator/RAILWAY_TOKEN_PRD"
 
 
+# -- checking the services are ready ---------------------------------------
+
+
+NOT_READY = ("issue", "not ready to rotate; nothing was written")
+
+
+def _checker(fake: FakeRailway) -> Any:
+    return worker.railway_checker(
+        token_reader=lambda config: TOKEN, railway_factory=lambda token: fake
+    )
+
+
+def test_the_checker_passes_services_that_hold_every_variable() -> None:
+    needs = {"api-kaianolevine-com": [KEY, PREV], "db-poller": [KEY]}
+    assert _checker(FakeRailway())("dev", needs) == []
+
+
+def test_the_checker_names_the_reference_to_add() -> None:
+    fake = FakeRailway()
+    fake.variables["s-api"] = {KEY}
+    assert _checker(fake)("dev", {"api-kaianolevine-com": [KEY, PREV]}) == [
+        f"api-kaianolevine-com in development does not reference {PREV}: "
+        "set it to ${{shared." + PREV + "}}"
+    ]
+
+
+def test_the_checker_names_a_service_missing_from_the_environment() -> None:
+    fake = FakeRailway(services={"api-kaianolevine-com": "s-api"})
+    needs = {"api-kaianolevine-com": [KEY], "db-poller": [KEY]}
+    assert _checker(fake)("dev", needs) == ["db-poller is not in Railway development"]
+
+
+def test_the_checker_refuses_a_token_for_the_wrong_environment() -> None:
+    fake = FakeRailway(environment="production")
+    assert _checker(fake)("dev", {"api-kaianolevine-com": [KEY]}) == [
+        "the dev Railway token reaches production, not development"
+    ]
+
+
+def test_a_rotation_the_services_are_not_ready_for_writes_nothing() -> None:
+    fake = FakeDoppler({KEY: "old"})
+    asked: list[Any] = []
+
+    def check(cfg: str, needs: Any) -> list[str]:
+        asked.append((cfg, {s: list(n) for s, n in needs.items()}))
+        return [f"api-kaianolevine-com in development does not reference {PREV}"]
+
+    report, steps = _handover(fake, check=check)
+    assert asked == [("dev", {"api-kaianolevine-com": [KEY, PREV], "db-poller": [KEY]})]
+    assert fake.secrets == {KEY: "old"} and fake.writes() == []
+    assert steps == [] and report.lines == [NOT_READY]
+
+
+def test_a_compromised_rotation_needs_no_previous_reference() -> None:
+    fake = FakeDoppler({KEY: "old"})
+    asked: list[Any] = []
+
+    def check(cfg: str, needs: Any) -> list[str]:
+        asked.append({s: list(n) for s, n in needs.items()})
+        return []
+
+    report, _ = _handover(fake, "compromised", config="prd", check=check)
+    assert asked == [{"api-kaianolevine-com": [KEY], "db-poller": [KEY]}]
+    assert report.lines == [("updated", "rotated")]
+
+
+def test_a_check_railway_cannot_answer_is_reported_and_writes_nothing() -> None:
+    from rotator_cog.railway import RailwayError
+
+    def check(cfg: str, needs: Any) -> list[str]:
+        raise RailwayError("list the environment's services: HTTP 503")
+
+    fake = FakeDoppler({KEY: "old"})
+    report, steps = _handover(fake, check=check)
+    assert fake.writes() == [] and steps == [] and report.lines == [NOT_READY]
+
+
 # -- checking a machine key ------------------------------------------------
 
 
@@ -565,6 +648,36 @@ def test_an_api_that_cannot_be_reached_is_a_failed_check() -> None:
 
     verify = worker.machine_verifier(INVENTORY, transport=httpx.MockTransport(fail))
     assert verify(KEY, {}, "prd", "v") == "whoami could not be asked: ConnectError"
+
+
+def test_an_api_that_is_still_coming_up_is_asked_again() -> None:
+    answers = [httpx.ConnectError("down"), 503]
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if answers:
+            answer = answers.pop(0)
+            if isinstance(answer, Exception):
+                raise answer
+            return httpx.Response(answer, json={})
+        return httpx.Response(200, json={"verified": {"subject": "deejay-cog"}})
+
+    verify = worker.machine_verifier(INVENTORY, transport=httpx.MockTransport(handle))
+    assert verify(KEY, {}, "prd", "v") is None
+
+
+def test_an_api_that_stays_down_is_asked_every_attempt_then_fails() -> None:
+    seen: list[httpx.Request] = []
+    verify = _whoami(503, {}, seen=seen)
+    assert verify(KEY, {}, "prd", "v") == "whoami answered HTTP 503"
+    assert len(seen) == worker.VERIFY_ATTEMPTS
+
+
+def test_a_key_the_api_refuses_is_not_asked_again() -> None:
+    seen: list[httpx.Request] = []
+    assert (
+        _whoami(401, {}, seen=seen)(KEY, {}, "prd", "v") == "whoami answered HTTP 401"
+    )
+    assert len(seen) == 1
 
 
 # -- messages and the handler ----------------------------------------------

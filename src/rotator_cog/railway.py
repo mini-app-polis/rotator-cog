@@ -13,6 +13,11 @@ fit the function's timeout.
 Reading a service's variables returns every value it holds. They are hashed
 against what is expected and dropped there: nothing here logs, keeps or
 raises with a value, a token or a response body.
+
+Each call is tried up to ``ATTEMPTS`` times when Railway cannot be reached
+or answers 429 or 5xx, since the worker's queue delivers a job once. A
+redeploy is the exception: it is asked again only when the request never
+left, because a redeploy Railway did start would otherwise start twice.
 """
 
 from __future__ import annotations
@@ -26,6 +31,15 @@ import httpx
 
 URL = "https://backboard.railway.com/graphql/v2"
 TIMEOUT_SECONDS = 30.0
+
+#: How many times a call is tried, and how long between tries.
+ATTEMPTS = 3
+RETRY_WAIT_SECONDS = 2.0
+#: Answers worth asking again: Railway was busy or briefly down.
+RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+#: Transport failures where the request was never sent, so repeating it
+#: cannot repeat its effect.
+NOT_SENT = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
 
 #: How often a wait asks again.
 POLL_SECONDS = 5.0
@@ -72,6 +86,7 @@ class RailwayError(RuntimeError):
 
 
 def digest(value: str) -> str:
+    """A value's SHA-256, how a variable is compared without being kept."""
     return hashlib.sha256(value.encode()).hexdigest()
 
 
@@ -86,6 +101,8 @@ class Railway:
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
+        # no-retry: builds the client; the one call made here goes through
+        # _call, which retries.
         self._client = httpx.Client(
             headers={"Project-Access-Token": token, "Content-Type": "application/json"},
             timeout=TIMEOUT_SECONDS,
@@ -97,13 +114,31 @@ class Railway:
         self.project_id = str(scope["projectId"])
         self.environment_id = str(scope["environmentId"])
 
-    def _call(self, what: str, query: str, variables: dict[str, Any]) -> dict[str, Any]:
-        try:
-            response = self._client.post(
-                URL, json={"query": query, "variables": variables}
-            )
-        except httpx.HTTPError as exc:
-            raise RailwayError(f"{what}: {type(exc).__name__}") from None
+    def _call(
+        self,
+        what: str,
+        query: str,
+        variables: dict[str, Any],
+        *,
+        repeatable: bool = True,
+    ) -> dict[str, Any]:
+        """One GraphQL request. ``repeatable`` False: retried only if never sent."""
+        retried = httpx.TransportError if repeatable else NOT_SENT
+        for attempt in range(1, ATTEMPTS + 1):
+            last = attempt == ATTEMPTS
+            try:
+                response = self._client.post(
+                    URL, json={"query": query, "variables": variables}
+                )
+            except retried as exc:
+                if last:
+                    raise RailwayError(f"{what}: {type(exc).__name__}") from None
+            except httpx.HTTPError as exc:
+                raise RailwayError(f"{what}: {type(exc).__name__}") from None
+            else:
+                if not (repeatable and response.status_code in RETRY_STATUSES) or last:
+                    break
+            self._sleep(RETRY_WAIT_SECONDS)
         try:
             body = response.json()
         except ValueError:
@@ -137,8 +172,8 @@ class Railway:
         edges = self._environment()["serviceInstances"]["edges"]
         return {e["node"]["serviceName"]: e["node"]["serviceId"] for e in edges}
 
-    def _matches(self, service_id: str, expected: Mapping[str, str | None]) -> bool:
-        held = self._call(
+    def _variables(self, service_id: str) -> dict[str, str]:
+        held: dict[str, str] = self._call(
             "read a service's variables",
             VARIABLES,
             {
@@ -147,6 +182,23 @@ class Railway:
                 "serviceId": service_id,
             },
         )["variables"]
+        return held
+
+    def variable_names(self, service_id: str) -> set[str]:
+        """The names of the variables a service holds, references included.
+
+        A reference to a shared variable Doppler has not filled yet is
+        listed, empty; a shared variable the service does not reference is
+        not. Only the names are kept.
+        """
+        held = self._variables(service_id)
+        try:
+            return set(held)
+        finally:
+            del held
+
+    def _matches(self, service_id: str, expected: Mapping[str, str | None]) -> bool:
+        held = self._variables(service_id)
         try:
             for name, want in expected.items():
                 # A referenced variable Doppler does not hold renders empty,
@@ -189,7 +241,9 @@ class Railway:
         )["deployments"]["edges"]
         if not edges:
             raise RailwayError(f"{service_id} has no successful deployment to redeploy")
-        data = self._call("redeploy", REDEPLOY, {"id": edges[0]["node"]["id"]})
+        data = self._call(
+            "redeploy", REDEPLOY, {"id": edges[0]["node"]["id"]}, repeatable=False
+        )
         return str(data["deploymentRedeploy"]["id"])
 
     def wait_for_deployments(

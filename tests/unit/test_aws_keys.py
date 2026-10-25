@@ -60,6 +60,7 @@ def _run(
     mode: str = "routine",
     *,
     reason: str | None = None,
+    check: Any = None,
 ) -> tuple[list[Any], list[Any]]:
     steps: list[Any] = []
     report: list[Any] = []
@@ -93,12 +94,27 @@ def _run(
         now=lambda: NOW,
         iam_factory=lambda: iam,
         aws_verify=verify,
+        check=check,
     )
     return steps, report
 
 
 def _fake() -> FakeDoppler:
     return FakeDoppler({NAME: OLD_SECRET, ID_VAR: OLD_ID})
+
+
+def test_a_key_the_services_are_not_ready_for_is_not_created() -> None:
+    iam, fake = FakeIam(), _fake()
+    asked: list[Any] = []
+
+    def check(cfg: str, needs: Any) -> list[str]:
+        asked.append({s: list(n) for s, n in needs.items()})
+        return [f"db-poller in production does not reference {ID_VAR}"]
+
+    steps, report = _run(iam, fake, check=check)
+    assert asked == [{"db-poller": [ID_VAR, NAME]}]
+    assert iam.keys == {OLD_ID: "Active"} and fake.writes() == [] and steps == []
+    assert [r[1] for r in report] == ["not ready to rotate; nothing was written"]
 
 
 def test_a_routine_rotation_replaces_the_key_and_deletes_the_old_after_verifying() -> (

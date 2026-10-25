@@ -53,17 +53,44 @@ uv run scripts/rotate.py rotate OPENAI_API_KEY --reason "routine" --dry-run
 [`secrets/README.md`](secrets/README.md) has the full procedure, including
 what to do when a secret is compromised.
 
-## Development
+## Running locally
+
+Requires Python 3.11+, [uv](https://github.com/astral-sh/uv) and the
+[Doppler CLI](https://docs.doppler.com/docs/install-cli). Secrets come from
+Doppler's shared `dev` config — nothing reads a `.env` file;
+[`.env.example`](.env.example) lists the names.
 
 ```sh
+brew install dopplerhq/cli/doppler   # once per machine
+doppler login                        # once per machine
+
+doppler setup                        # once per clone: reads doppler.yaml
 uv sync
+uv run pre-commit install            # once per clone: ruff and gitleaks on commit
+uv run check-doppler-keys            # every required .env.example name is in dev
+
 uv run pytest
+uv run pre-commit run --all-files
 uv run ruff check && uv run ruff format --check
 uv run mypy src/
 ```
 
-The tests check the inventory's and the legacy record's shape (every
-rotated kind has a cadence, and no row carries a value), the events
-rotate.py and the import write against the API's contract, and the client
-against a fake transport, and the worker's message handling, job checks
-and token reads against fakes.
+The tests need no secrets and reach nothing. `tests/unit/` checks the
+inventory's and the legacy record's shape (every rotated kind has a
+cadence, and no row carries a value), the events rotate.py and the import
+write against the API's contract, the clients against fake transports,
+and the worker's message handling, job checks, retries and token reads
+against fakes. `tests/integration/` runs `lambda_handler` from an SQS
+record through the real Doppler, Railway and API clients, with the far
+ends faked at the wire by respx and wired to each other as the real ones
+are.
+
+The worker itself runs only on Lambda: its Doppler and Railway tokens are
+in Parameter Store, never on a laptop.
+
+## Decisions
+
+[`docs/decisions/`](docs/decisions/README.md) records why the worker is
+shaped as it is: what it rotates and what stays on rotate.py, the two-phase
+handover, one delivery per job and how duplicates are handled, and the
+daily sweep.

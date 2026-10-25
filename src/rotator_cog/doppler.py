@@ -7,16 +7,30 @@ The token is a service token for one config, sent as a bearer token. A
 value passes through here only on its way to or from Doppler: no error
 raised here carries a value, a token or a response body (Doppler's answer to
 a write echoes the values it holds), and nothing here logs.
+
+Each request is tried up to ``ATTEMPTS`` times when Doppler cannot be
+reached or answers 429 or 5xx. The worker's queue delivers a job once, so a
+blip that is not retried here leaves a secret half rotated for a person to
+finish. Every request is safe to repeat: reads, and writes that set a name
+to a value.
 """
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import httpx
+from pydantic import BaseModel, Field, ValidationError
 
 BASE_URL = "https://api.doppler.com"
 TIMEOUT_SECONDS = 15.0
+
+#: How many times a request is tried, and how long between tries.
+ATTEMPTS = 3
+RETRY_WAIT_SECONDS = 2.0
+#: Answers worth asking again: Doppler was busy or briefly down.
+RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
 
 #: The slot the API also accepts a key from while callers move to the new one.
 PREVIOUS_SUFFIX = "_PREVIOUS"
@@ -26,7 +40,26 @@ class DopplerError(RuntimeError):
     """Doppler refused a request, or could not be asked. Names, never values."""
 
 
+class _Value(BaseModel):
+    """One secret's value, as Doppler returns it."""
+
+    raw: str | None = Field(default=None, description="The value as stored.")
+
+
+class _Secret(BaseModel):
+    """GET /v3/configs/config/secret: the parts read; the rest is ignored."""
+
+    value: _Value = Field(..., description="The secret's value.")
+
+
+class _Names(BaseModel):
+    """GET /v3/configs/config/secrets/names."""
+
+    names: list[str] = Field(..., description="Every secret name in the config.")
+
+
 def previous_name(name: str) -> str:
+    """The slot that holds ``name``'s outgoing value during a handover."""
     return f"{name}{PREVIOUS_SUFFIX}"
 
 
@@ -41,6 +74,8 @@ class Doppler:
         *,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
+        # no-retry: builds the client and calls nothing; _request retries
+        # every request made through it.
         self.project = project
         self.config = config
         self._client = httpx.Client(
@@ -53,10 +88,20 @@ class Doppler:
     def _request(
         self, what: str, method: str, path: str, **kwargs: Any
     ) -> httpx.Response:
-        try:
-            return self._client.request(method, path, **kwargs)
-        except httpx.HTTPError as exc:
-            raise DopplerError(f"{what}: {type(exc).__name__}") from None
+        for attempt in range(1, ATTEMPTS + 1):
+            last = attempt == ATTEMPTS
+            try:
+                response = self._client.request(method, path, **kwargs)
+            except httpx.TransportError as exc:
+                if last:
+                    raise DopplerError(f"{what}: {type(exc).__name__}") from None
+            except httpx.HTTPError as exc:
+                raise DopplerError(f"{what}: {type(exc).__name__}") from None
+            else:
+                if response.status_code not in RETRY_STATUSES or last:
+                    return response
+            time.sleep(RETRY_WAIT_SECONDS)
+        raise AssertionError("unreachable")  # pragma: no cover
 
     def get(self, name: str) -> str | None:
         """``name``'s value in this config, or None when it is not set."""
@@ -71,11 +116,12 @@ class Doppler:
             return None
         if response.status_code != 200:
             raise DopplerError(f"{what}: HTTP {response.status_code}")
+        # A ValidationError quotes its input, here the value: never let it out.
         try:
-            raw = response.json()["value"]["raw"]
-        except (ValueError, KeyError, TypeError):
+            raw = _Secret.model_validate_json(response.content).value.raw
+        except ValidationError:
             raise DopplerError(f"{what}: unexpected response") from None
-        return raw if isinstance(raw, str) and raw else None
+        return raw or None
 
     def names(self) -> set[str]:
         """Every secret name in this config (names only; no values are read)."""
@@ -89,10 +135,10 @@ class Doppler:
         if response.status_code != 200:
             raise DopplerError(f"{what}: HTTP {response.status_code}")
         try:
-            names = response.json()["names"]
-        except (ValueError, KeyError, TypeError):
+            names = _Names.model_validate_json(response.content).names
+        except ValidationError:
             raise DopplerError(f"{what}: unexpected response") from None
-        return {str(n) for n in names}
+        return set(names)
 
     def change(self, name: str, changes: list[dict[str, Any]]) -> None:
         """Apply ``changes`` in one request. The response is not kept."""
