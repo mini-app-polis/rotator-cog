@@ -1,3 +1,10 @@
+# [1.4.0](https://github.com/mini-app-polis/rotator-cog/compare/v1.3.0...v1.4.0) (2026-10-25)
+
+
+### Features
+
+* **worker:** verify the new key with whoami and record each rotation as ok or failed ([5062e50](https://github.com/mini-app-polis/rotator-cog/commit/5062e50418ccd4d6804f44f97b83148c59e44401))
+
 # [1.3.0](https://github.com/mini-app-polis/rotator-cog/compare/v1.2.0...v1.3.0) (2026-10-25)
 
 
