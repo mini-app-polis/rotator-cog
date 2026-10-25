@@ -1,3 +1,10 @@
+## [1.7.1](https://github.com/mini-app-polis/rotator-cog/compare/v1.7.0...v1.7.1) (2026-10-25)
+
+
+### Bug Fixes
+
+* **worker:** strip whitespace from tokens read from Parameter Store ([f65dc98](https://github.com/mini-app-polis/rotator-cog/commit/f65dc98bcae99fce3e105eb5fd60791f376c7176))
+
 # [1.7.0](https://github.com/mini-app-polis/rotator-cog/compare/v1.6.0...v1.7.0) (2026-10-25)
 
 
