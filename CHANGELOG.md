@@ -1,3 +1,10 @@
+# [1.5.0](https://github.com/mini-app-polis/rotator-cog/compare/v1.4.0...v1.5.0) (2026-10-25)
+
+
+### Features
+
+* **sweep:** retire previous keys nothing uses, rotate the most overdue key and report drift, daily per config ([f7f82f6](https://github.com/mini-app-polis/rotator-cog/commit/f7f82f635d9641ef9d1bb9451e7ea45b2a0bb28c))
+
 # [1.4.0](https://github.com/mini-app-polis/rotator-cog/compare/v1.3.0...v1.4.0) (2026-10-25)
 
 
