@@ -17,8 +17,13 @@ TOKEN = "dp.st.token-for-tests"
 
 INVENTORY = {
     "secrets": {
-        "DEEJAY_COG_API_KEY": {"kind": "machine-key", "configs": ["prd", "dev"]},
-        "TICK_SECRET": {"kind": "generated"},
+        "DEEJAY_COG_API_KEY": {
+            "kind": "machine-key",
+            "configs": ["prd", "dev"],
+            "redeploy": ["api-kaianolevine-com", "db-poller"],
+        },
+        "TICK_SECRET": {"kind": "generated", "redeploy": ["api-kaianolevine-com"]},
+        "LONE_API_KEY": {"kind": "machine-key", "redeploy": ["db-poller"]},
         "OPENAI_API_KEY": {"kind": "manual"},
         "CI_VALIDATOR_API_KEY": {
             "kind": "machine-key",
@@ -106,6 +111,7 @@ def test_a_job_for_a_listed_worker_kind_in_a_config_it_is_held_in_passes() -> No
         (_job("TICK_SECRET", "dev"), "not held in dev"),
         (_job("CI_VALIDATOR_API_KEY"), "also held in GitHub"),
         (_job("GITHUB_WEBHOOK_SECRET"), "needs a manual step"),
+        (_job("LONE_API_KEY"), "api-kaianolevine-com is not in its redeploy list"),
     ],
 )
 def test_a_job_the_worker_cannot_rotate_is_refused(
@@ -227,12 +233,12 @@ def _handover(
     ok: bool = True,
     redeploy_fails: bool = False,
 ) -> tuple[Report, list[Any]]:
-    """Run a job through _rotate, recording each step against Doppler's state."""
+    """Run a job through _rotate, recording each redeploy against Doppler's state."""
     steps: list[Any] = []
     report = Report()
 
-    def redeploy(entry: Any, cfg: str) -> None:
-        steps.append(("redeploy", dict(fake.secrets)))
+    def redeploy(cfg: str, targets: Any) -> None:
+        steps.append(("redeploy", cfg, dict(fake.secrets), targets))
         if redeploy_fails:
             raise RuntimeError("redeploy failed")
 
@@ -256,47 +262,59 @@ def _handover(
     return report, steps
 
 
+KEY, PREV = "DEEJAY_COG_API_KEY", "DEEJAY_COG_API_KEY_PREVIOUS"
+
+
 def test_a_routine_rotation_hands_over_in_two_phases() -> None:
-    fake = FakeDoppler({"DEEJAY_COG_API_KEY": "old"})
+    fake = FakeDoppler({KEY: "old"})
     report, steps = _handover(fake)
-    new = fake.secrets["DEEJAY_COG_API_KEY"]
+    new = fake.secrets[KEY]
     assert new.startswith("dev_") and new != "old"
-    # Phase 1: the API is redeployed knowing both, callers still on the old key.
+    # Phase 1: only the API is redeployed, once it holds both keys; callers
+    # still read the old one.
     assert steps[0] == (
         "redeploy",
-        {"DEEJAY_COG_API_KEY": "old", "DEEJAY_COG_API_KEY_PREVIOUS": new},
+        "dev",
+        {KEY: "old", PREV: new},
+        {"api-kaianolevine-com": {KEY: "old", PREV: new}},
     )
-    # Phase 2: callers switch, the old key stays accepted.
+    # Phase 2: callers switch, and the API still accepts the old key.
     assert steps[1] == (
         "redeploy",
-        {"DEEJAY_COG_API_KEY": new, "DEEJAY_COG_API_KEY_PREVIOUS": "old"},
+        "dev",
+        {KEY: new, PREV: "old"},
+        {"api-kaianolevine-com": {KEY: new, PREV: "old"}, "db-poller": {KEY: new}},
     )
     assert steps[2] == ("verify", True)
     assert report.lines == [("updated", "rotated")]
 
 
 def test_a_compromised_rotation_is_one_write_with_no_previous_slot() -> None:
-    fake = FakeDoppler(
-        {"DEEJAY_COG_API_KEY": "old", "DEEJAY_COG_API_KEY_PREVIOUS": "older"}
-    )
+    fake = FakeDoppler({KEY: "old", PREV: "older"})
     report, steps = _handover(fake, "compromised", config="prd")
-    new = fake.secrets["DEEJAY_COG_API_KEY"]
-    assert fake.secrets == {"DEEJAY_COG_API_KEY": new} and not new.startswith("dev_")
-    assert [s[0] for s in steps] == ["redeploy", "verify"]
+    new = fake.secrets[KEY]
+    assert fake.secrets == {KEY: new} and not new.startswith("dev_")
     assert len(fake.writes()) == 1
+    assert steps[0] == (
+        "redeploy",
+        "prd",
+        {KEY: new},
+        {"api-kaianolevine-com": {KEY: new, PREV: None}, "db-poller": {KEY: new}},
+    )
+    assert steps[1] == ("verify", True)
     assert report.lines == [("updated", "rotated")]
 
 
 def test_a_failed_verification_is_reported() -> None:
-    report, _ = _handover(FakeDoppler({"DEEJAY_COG_API_KEY": "old"}), ok=False)
+    report, _ = _handover(FakeDoppler({KEY: "old"}), ok=False)
     assert report.lines == [("issue", "verification failed")]
 
 
 def test_a_failed_redeploy_stops_before_callers_switch() -> None:
-    fake = FakeDoppler({"DEEJAY_COG_API_KEY": "old"})
+    fake = FakeDoppler({KEY: "old"})
     with pytest.raises(RuntimeError, match="redeploy failed"):
         _handover(fake, redeploy_fails=True)
-    assert fake.secrets["DEEJAY_COG_API_KEY"] == "old"
+    assert fake.secrets[KEY] == "old"
 
 
 def test_a_secret_missing_from_doppler_is_reported_and_nothing_is_written() -> None:
@@ -320,11 +338,98 @@ def test_without_redeploy_and_verify_nothing_is_written() -> None:
 
 
 def test_no_value_reaches_a_log_line(caplog: pytest.LogCaptureFixture) -> None:
-    fake = FakeDoppler({"DEEJAY_COG_API_KEY": "old"})
+    fake = FakeDoppler({KEY: "old"})
     with caplog.at_level("DEBUG"):
         _handover(fake)
     logged = caplog.text
-    assert fake.secrets["DEEJAY_COG_API_KEY"] not in logged and TOKEN not in logged
+    assert fake.secrets[KEY] not in logged and TOKEN not in logged
+
+
+# -- redeploying through Railway -------------------------------------------
+
+
+class FakeRailway:
+    def __init__(self, environment: str = "development", services: Any = None):
+        self.environment = environment
+        self.services = services or {
+            "api-kaianolevine-com": "s-api",
+            "db-poller": "s-poll",
+        }
+        self.calls: list[tuple] = []
+
+    def environment_name(self) -> str:
+        return self.environment
+
+    def service_ids(self) -> dict[str, str]:
+        return dict(self.services)
+
+    def wait_for_variables(
+        self, service_id: str, expected: Any, *, timeout: float
+    ) -> None:
+        self.calls.append(("vars", service_id, dict(expected)))
+
+    def redeploy(self, service_id: str) -> str:
+        self.calls.append(("redeploy", service_id))
+        return f"d-{service_id}"
+
+    def wait_for_deployments(self, ids: list[str], *, timeout: float) -> None:
+        self.calls.append(("wait", ids))
+
+
+def _redeployer(fake: FakeRailway, read: list[str] | None = None) -> Any:
+    def token_reader(config: str) -> str:
+        (read if read is not None else []).append(config)
+        return TOKEN
+
+    return worker.railway_redeployer(
+        token_reader=token_reader, railway_factory=lambda token: fake
+    )
+
+
+def test_the_redeployer_waits_for_values_then_redeploys_and_waits() -> None:
+    from rotator_cog.railway import digest
+
+    fake = FakeRailway()
+    read: list[str] = []
+    _redeployer(fake, read)(
+        "dev",
+        {"api-kaianolevine-com": {KEY: "new", PREV: None}, "db-poller": {KEY: "new"}},
+    )
+    assert read == ["dev"]
+    assert fake.calls == [
+        ("vars", "s-api", {KEY: digest("new"), PREV: None}),
+        ("vars", "s-poll", {KEY: digest("new")}),
+        ("redeploy", "s-api"),
+        ("redeploy", "s-poll"),
+        ("wait", ["d-s-api", "d-s-poll"]),
+    ]
+
+
+def test_a_token_for_the_wrong_environment_is_refused() -> None:
+    from rotator_cog.railway import RailwayError
+
+    fake = FakeRailway(environment="production")
+    with pytest.raises(RailwayError, match="reaches production, not development"):
+        _redeployer(fake)("dev", {"api-kaianolevine-com": {KEY: "new"}})
+    assert fake.calls == []
+
+
+def test_a_service_missing_from_railway_is_refused_before_any_redeploy() -> None:
+    from rotator_cog.railway import RailwayError
+
+    fake = FakeRailway(services={"api-kaianolevine-com": "s-api"})
+    with pytest.raises(RailwayError, match="db-poller"):
+        _redeployer(fake)("dev", {"api-kaianolevine-com": {}, "db-poller": {}})
+    assert fake.calls == []
+
+
+def test_the_railway_token_is_read_from_the_configs_parameter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RAILWAY_TOKEN_PRD_PARAMETER", "/rotator/RAILWAY_TOKEN_PRD")
+    ssm = FakeSsm()
+    assert worker.railway_token("prd", client=ssm) == TOKEN
+    assert ssm.calls[0]["Name"] == "/rotator/RAILWAY_TOKEN_PRD"
 
 
 # -- messages and the handler ----------------------------------------------

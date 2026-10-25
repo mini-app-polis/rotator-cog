@@ -34,8 +34,15 @@ rotated, which needs a person, so the queue delivers each message once
 named in ``batchItemFailures`` and lands in the dead-letter queue, whose
 alarm says so.
 
-Redeploying and verifying are not built yet, so a valid job is reported as
-not rotated and nothing is written; a sweep is acknowledged and logged.
+After each Doppler write the services that read the secret at boot are
+redeployed in the config's Railway environment, once Railway shows the new
+value (railway.py), with a Railway project token per config from Parameter
+Store (RAILWAY_TOKEN_PRD_PARAMETER, RAILWAY_TOKEN_DEV_PARAMETER). Phase 1
+redeploys only the service that accepts the key; phase 2 and a compromised
+rotation redeploy every service the entry lists.
+
+Verifying is not built yet, so a valid job is reported as not rotated and
+nothing is written; a sweep is acknowledged and logged.
 """
 
 from __future__ import annotations
@@ -67,6 +74,7 @@ from mini_app_polis.pipeline_status import post_run_finding, run_report
 from mini_app_polis.sentry import init_sentry
 
 from . import doppler as doppler_mod
+from . import railway as railway_mod
 from ._version import __version__
 
 log = logger_mod.get_logger()
@@ -83,6 +91,23 @@ TOKEN_PARAMETER_VARS = {
     "prd": "DOPPLER_TOKEN_PRD_PARAMETER",
     "dev": "DOPPLER_TOKEN_DEV_PARAMETER",
 }
+#: The same for each config's Railway project token.
+RAILWAY_TOKEN_PARAMETER_VARS = {
+    "prd": "RAILWAY_TOKEN_PRD_PARAMETER",
+    "dev": "RAILWAY_TOKEN_DEV_PARAMETER",
+}
+#: The Railway environment each Doppler config syncs to.
+RAILWAY_ENVIRONMENTS = {"prd": "production", "dev": "development"}
+
+#: The service that accepts a machine key, and so must know a new one
+#: before its callers present it.
+ACCEPTING_SERVICE = "api-kaianolevine-com"
+
+#: How long Railway may take to show a value Doppler has written, and a
+#: redeploy to be running. Each phase waits for both, so the function's
+#: timeout in mini-app-polis/infra covers two of each.
+SYNC_TIMEOUT_SECONDS = 120.0
+DEPLOY_TIMEOUT_SECONDS = 240.0
 
 #: How long before the function's timeout a run is stopped, leaving room for
 #: the run report and the handler's return.
@@ -95,8 +120,10 @@ _REPO_INVENTORY = Path(__file__).resolve().parents[2] / "secrets" / "inventory.y
 init_sentry(REPO)
 
 
-#: Redeploys the entry's services in the config's environment; raises on failure.
-Redeployer = Callable[[Mapping[str, Any], str], None]
+#: Redeploys services in the config's environment once each holds the values
+#: given for it (None: not set); raises on failure.
+#: (config, {service: {variable: value or None}}) -> None
+Redeployer = Callable[[str, Mapping[str, Mapping[str, str | None]]], None]
 #: Whether the new value works: (name, entry, config, value) -> ok.
 Verifier = Callable[[str, Mapping[str, Any], str, str], bool]
 
@@ -131,6 +158,8 @@ def validate(job: RotationRequest, inventory: Mapping[str, Any]) -> dict[str, An
         raise InvalidJob("also held in GitHub: rotate it with rotate.py")
     if entry.get("steps"):
         raise InvalidJob("needs a manual step: rotate it with rotate.py")
+    if ACCEPTING_SERVICE not in entry.get("redeploy", []):
+        raise InvalidJob(f"{ACCEPTING_SERVICE} is not in its redeploy list")
     return dict(entry)
 
 
@@ -144,13 +173,22 @@ def mint(inventory: Mapping[str, Any], config: str) -> str:
 
 
 def doppler_token(config: str, *, client: Any | None = None) -> str:
-    """The Doppler token for ``config``, from Parameter Store.
+    """The Doppler token for ``config``, from Parameter Store."""
+    return _secure_parameter(TOKEN_PARAMETER_VARS[config], client=client)
+
+
+def railway_token(config: str, *, client: Any | None = None) -> str:
+    """The Railway project token for ``config``, from Parameter Store."""
+    return _secure_parameter(RAILWAY_TOKEN_PARAMETER_VARS[config], client=client)
+
+
+def _secure_parameter(var: str, *, client: Any | None = None) -> str:
+    """The SecureString at the path ``var`` names.
 
     boto3 ships in the Lambda runtime and is imported only here; tests pass a
     fake ``client``. No error raised here carries the value or the AWS
     error's text.
     """
-    var = TOKEN_PARAMETER_VARS[config]
     name = os.environ.get(var)
     if not name:
         raise TokenUnavailable(f"{var} is not set")
@@ -164,6 +202,42 @@ def doppler_token(config: str, *, client: Any | None = None) -> str:
     if not value:
         raise TokenUnavailable(f"{name} has no value")
     return str(value)
+
+
+def railway_redeployer(
+    *,
+    token_reader: Callable[[str], str] = railway_token,
+    railway_factory: Callable[[str], railway_mod.Railway] = railway_mod.Railway,
+) -> Redeployer:
+    """Redeploy through Railway, with the config's project token."""
+
+    def redeploy(config: str, targets: Mapping[str, Mapping[str, str | None]]) -> None:
+        railway = railway_factory(token_reader(config))
+        environment = railway.environment_name()
+        if environment != RAILWAY_ENVIRONMENTS[config]:
+            raise railway_mod.RailwayError(
+                f"the {config} Railway token reaches {environment}, "
+                f"not {RAILWAY_ENVIRONMENTS[config]}"
+            )
+        ids = railway.service_ids()
+        unknown = sorted(set(targets) - set(ids))
+        if unknown:
+            raise railway_mod.RailwayError(
+                f"not in Railway {environment}: {', '.join(unknown)}"
+            )
+        for service, values in targets.items():
+            railway.wait_for_variables(
+                ids[service],
+                {
+                    name: None if value is None else railway_mod.digest(value)
+                    for name, value in values.items()
+                },
+                timeout=SYNC_TIMEOUT_SECONDS,
+            )
+        deployments = [railway.redeploy(ids[service]) for service in targets]
+        railway.wait_for_deployments(deployments, timeout=DEPLOY_TIMEOUT_SECONDS)
+
+    return redeploy
 
 
 def rotate(
@@ -183,7 +257,14 @@ def rotate(
             report.issue("rotation job rejected", label, detail=str(exc))
             return
         token = token_reader(job.config)
-        _rotate(job, entry, token, inventory=inventory, report=report)
+        _rotate(
+            job,
+            entry,
+            token,
+            inventory=inventory,
+            report=report,
+            redeploy=railway_redeployer(),
+        )
 
 
 def _rotate(
@@ -215,14 +296,24 @@ def _rotate(
         report.issue("not in Doppler", label)
         return
     new = mint(inventory, job.config)
+    name, previous = job.name, doppler_mod.previous_name(job.name)
+    callers = [s for s in entry["redeploy"] if s != ACCEPTING_SERVICE]
     if job.mode == "compromised":
-        doppler_mod.replace(store, job.name, new)
+        doppler_mod.replace(store, name, new)
+        accepted: dict[str, str | None] = {name: new, previous: None}
     else:
-        doppler_mod.stage(store, job.name, new)
-        redeploy(entry, job.config)
-        doppler_mod.promote(store, job.name, new, old)
+        doppler_mod.stage(store, name, new)
+        # Phase 1: the accepting service learns the new key; callers keep NAME.
+        redeploy(job.config, {ACCEPTING_SERVICE: {name: old, previous: new}})
+        doppler_mod.promote(store, name, new, old)
+        accepted = {name: new, previous: old}
     del old
-    redeploy(entry, job.config)
+    # Phase 2 (or the compromised write): every service takes the new key.
+    redeploy(
+        job.config,
+        {ACCEPTING_SERVICE: accepted, **{s: {name: new} for s in callers}},
+    )
+    del accepted
     ok = verify(job.name, entry, job.config, new)
     del new
     if ok:

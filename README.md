@@ -23,8 +23,10 @@ in Doppler.
   held in, and only secrets that live in Doppler alone), and reads that
   config's Doppler token from Parameter Store. A routine rotation hands the
   new value over in two phases (`NAME_PREVIOUS` first, so the API accepts
-  it before callers switch); a compromised one replaces it at once.
-  Redeploying and verifying are not built yet, so a valid job writes
+  it before callers switch); a compromised one replaces it at once. After
+  each write it waits for Railway to show the new value, then redeploys the
+  services that read it with that config's Railway project token, reusing
+  their last image. Verifying is not built yet, so a valid job writes
   nothing and is reported as not rotated, and a sweep is acknowledged. CI
   deploys it after each release.
 
