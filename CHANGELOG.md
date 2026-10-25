@@ -1,3 +1,10 @@
+# [1.8.0](https://github.com/mini-app-polis/rotator-cog/compare/v1.7.2...v1.8.0) (2026-10-25)
+
+
+### Features
+
+* **sweep:** pass over a key the services are not ready for and rotate the next most overdue ([031e7ef](https://github.com/mini-app-polis/rotator-cog/commit/031e7efe67d4978c89e7bc2bc216f0a4c85f00f3))
+
 ## [1.7.2](https://github.com/mini-app-polis/rotator-cog/compare/v1.7.1...v1.7.2) (2026-10-25)
 
 
