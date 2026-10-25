@@ -1,3 +1,16 @@
+# [1.1.0](https://github.com/mini-app-polis/rotator-cog/compare/v1.0.0...v1.1.0) (2026-10-25)
+
+
+### Bug Fixes
+
+* **secrets:** print secret names again; the CodeQL findings were names, not values ([dc4af84](https://github.com/mini-app-polis/rotator-cog/commit/dc4af847c9b20c0bf5104afb3a6e3ed323db4275))
+
+
+### Features
+
+* **secrets:** record rotations through the API and import the legacy ledger ([07df008](https://github.com/mini-app-polis/rotator-cog/commit/07df008210b07c4e61ecc3737b5b1964d1eceb83))
+* **worker:** Lambda worker skeleton that checks rotation jobs against the inventory and reads the config's Doppler token ([e282de1](https://github.com/mini-app-polis/rotator-cog/commit/e282de122c70f12d275349df3f427960dbef5c5e))
+
 # 1.0.0 (2026-10-25)
 
 
