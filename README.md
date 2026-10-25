@@ -11,6 +11,9 @@ in Doppler.
 
 - [`secrets/`](secrets/README.md): the inventory, the legacy record the API
   is seeded from, and the compromise runbook.
+- [`docs/provider-assessment.md`](docs/provider-assessment.md): which
+  manually minted secrets the rotator could take over, and why each stays
+  manual.
 - `scripts/rotate.py`: lists what is due, checks Doppler against the
   inventory, and rotates, verifies and records a secret.
 - `src/rotator_cog`: the record's client, the events rotate.py writes, and
