@@ -228,6 +228,7 @@ def _run(fake: FakeDoppler, api: FakeApi, posted: list) -> list[Any]:
             project, cfg, token, transport=httpx.MockTransport(fake.handle)
         ),
         redeploy_factory=lambda: redeploy,
+        checker_factory=lambda: lambda cfg, needs: [],
         verifier_factory=lambda inventory: lambda *a: None,
         recorder_factory=lambda: lambda event: steps.append(("record", event)),
         now=lambda: NOW,

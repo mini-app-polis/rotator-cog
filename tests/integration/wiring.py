@@ -7,8 +7,11 @@ far ends are fakes: HTTP through respx, and Parameter Store through a boto3
 stand-in, since boto3 ships in the Lambda runtime and not here.
 
 The fakes are wired to each other the way the real systems are: Railway
-shows a service whatever Doppler holds (Doppler's sync), and whoami names a
-machine only for the key Doppler holds for it.
+shows a service whatever Doppler holds (Doppler's sync), through references
+to every inventory name and its previous slot, as production's
+.railway/railway.ts declares them, so a reference Doppler does not fill
+shows empty; and whoami names a machine only for the key Doppler holds for
+it.
 """
 
 from __future__ import annotations
@@ -99,7 +102,7 @@ class World:
                 }
             }
         elif "variables(" in query:
-            data = {"variables": dict(self.secrets)}
+            data = {"variables": self.referenced()}
         elif "deploymentRedeploy" in query:
             self.redeployed.append(variables["id"].removeprefix("last-"))
             data = {"deploymentRedeploy": {"id": f"new-{variables['id']}"}}
@@ -113,6 +116,15 @@ class World:
         else:
             data = {"deployment": {"status": "SUCCESS"}}
         return httpx.Response(200, json={"data": data})
+
+    def referenced(self) -> dict[str, str]:
+        """What a service shows: each reference, rendered from Doppler or empty."""
+        names = set(self.secrets)
+        for name, entry in self.inventory["secrets"].items():
+            names |= {name, worker.doppler_mod.previous_name(name)}
+            if entry.get("id_var"):
+                names.add(entry["id_var"])
+        return {n: self.secrets.get(n, "") for n in names}
 
     # -- the API ---------------------------------------------------------
 

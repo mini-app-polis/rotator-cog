@@ -99,7 +99,12 @@ In development, a service reads only the shared variables referenced on
 it in the dashboard, so `api-kaianolevine-com` there needs each
 `<NAME>_API_KEY_PREVIOUS` referenced (`${{shared.NAME_API_KEY_PREVIOUS}}`)
 before the worker can rotate that key in dev. Production's references are
-in the service's `.railway/railway.ts`.
+in the service's `.railway/railway.ts`. The worker checks before it writes
+anything: a rotation whose services are missing, or do not reference a
+variable it would wait for, is reported as "not ready to rotate; nothing
+was written", naming the reference to add. A reference to a shared
+variable Doppler does not hold yet is fine; it renders empty until the
+first rotation fills it.
 
 ### Importing the legacy record
 
