@@ -149,3 +149,14 @@ def replace(doppler: Doppler, name: str, new: str) -> None:
 def retire(doppler: Doppler, names: list[str]) -> None:
     """Delete these previous slots in one write."""
     doppler.change(", ".join(names), [_delete(previous_name(name)) for name in names])
+
+
+def write(doppler: Doppler, label: str, values: dict[str, str]) -> None:
+    """Set each of these names to its value, in one write."""
+    doppler.change(
+        label,
+        [
+            _set(name, value, exists=doppler.get(name) is not None)
+            for name, value in values.items()
+        ],
+    )

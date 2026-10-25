@@ -19,8 +19,10 @@ in Doppler.
 - `src/rotator_cog/worker.py`: the Lambda worker behind rotator-cog's queue
   (declared in mini-app-polis/infra). It takes `rotation.job` and
   `rotation.sweep` messages. A job is checked against the inventory packaged
-  with it: machine keys only, in a config the key is held in, and only keys
-  that live in Doppler alone (the rest are rotated with rotate.py). A routine
+  with it: machine keys and IAM access keys, in a config the key is held
+  in, and only keys that live in Doppler alone (the rest are rotated with
+  rotate.py). An access key is created beside the old one, and the old one
+  deleted once the new one has verified. A routine
   rotation hands the new key over in two phases (`NAME_PREVIOUS` first, so
   the API accepts it before callers switch); a compromised one replaces it
   at once. After each write the worker waits for Railway to show the new

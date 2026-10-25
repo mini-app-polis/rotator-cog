@@ -127,18 +127,24 @@ def test_due_is_never_rotated_or_past_cadence_most_overdue_first() -> None:
         "C_API_KEY": _event("C_API_KEY", age=dt.timedelta(days=10), retired=NOW),
     }
     names = ["A_API_KEY", "B_API_KEY", "C_API_KEY", "D_API_KEY"]
-    overdue, failed = sweep.due(names, latest, 90, actor=ROTATOR, now=NOW)
+    overdue, failed = sweep.due(
+        names, latest, dict.fromkeys(names, 90), actor=ROTATOR, now=NOW
+    )
     assert overdue == ["D_API_KEY", "B_API_KEY", "A_API_KEY"] and failed == []
 
 
 def test_a_key_mid_handover_is_not_rotated_again() -> None:
     latest = {"A_API_KEY": _event("A_API_KEY", age=dt.timedelta(days=100))}
-    assert sweep.due(["A_API_KEY"], latest, 90, actor=ROTATOR, now=NOW) == ([], [])
+    assert sweep.due(
+        ["A_API_KEY"], latest, {"A_API_KEY": 90}, actor=ROTATOR, now=NOW
+    ) == ([], [])
 
 
 def test_a_failed_rotation_is_reported_not_retried() -> None:
     latest = {"A_API_KEY": _event("A_API_KEY", verification="failed")}
-    assert sweep.due(["A_API_KEY"], latest, 90, actor=ROTATOR, now=NOW) == (
+    assert sweep.due(
+        ["A_API_KEY"], latest, {"A_API_KEY": 90}, actor=ROTATOR, now=NOW
+    ) == (
         [],
         ["A_API_KEY"],
     )

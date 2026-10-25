@@ -66,8 +66,12 @@ There are two modes:
 
 ### Rotation by the worker
 
-The rotator's Lambda worker rotates machine keys that live in Doppler alone
-(the rest stay on `rotate.py`), with no 401 window: the API accepts a
+The rotator's Lambda worker rotates machine keys and IAM access keys that
+live in Doppler alone (the rest stay on `rotate.py`). An access key is
+created beside the old one, written to Doppler with its id, checked with
+`sts get-caller-identity` once the services have redeployed, and the old
+key deleted only then; a user that already has two keys is refused for a
+person to sort out. A machine key is rotated with no 401 window: the API accepts a
 machine's `<NAME>_API_KEY_PREVIOUS` beside its current key. A routine
 rotation puts the new key in the previous slot and redeploys the API, then
 makes it the current key with the old one in the previous slot and

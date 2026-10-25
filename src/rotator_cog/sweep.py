@@ -135,7 +135,7 @@ def retirements(
 def due(
     names: Iterable[str],
     latest: Mapping[str, RotationEvent],
-    cadence_days: int,
+    cadence_days: Mapping[str, int],
     *,
     actor: str,
     now: datetime,
@@ -153,7 +153,7 @@ def due(
             continue
         if last.actor == actor and last.mode == "routine" and last.retired is None:
             continue
-        if now - last.minted >= timedelta(days=cadence_days):
+        if now - last.minted >= timedelta(days=cadence_days[name]):
             ready.append((last.minted, name))
     return [name for _, name in sorted(ready)], sorted(failed)
 
