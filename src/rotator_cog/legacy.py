@@ -133,11 +133,10 @@ def plan(rows: Iterable[Mapping[str, Any]], inventory: Mapping[str, Any]) -> Pla
 
 
 def describe(e: Mapping[str, Any]) -> str:
-    """One event as a line: configs, kinds and times only (name redacted)."""
+    """One event as a line: names, configs, kinds and times only."""
     retired = f"retired {e['retired']}" if e["retired"] else "not retired"
-    redacted_name = "[REDACTED]"
     return (
-        f"{e['minted']}  {e['config']:<3}  {redacted_name:<38} {e['kind']:<15} "
+        f"{e['minted']}  {e['config']:<3}  {e['name']:<38} {e['kind']:<15} "
         f"{e['mode']:<11} {e['verification']:<6}  {retired}"
     )
 
