@@ -73,7 +73,9 @@ def entry(inv: dict, name: str) -> dict:
 def ledger() -> list[dict]:
     if not LEDGER.exists():
         return []
-    return [json.loads(line) for line in LEDGER.read_text().splitlines() if line.strip()]
+    return [
+        json.loads(line) for line in LEDGER.read_text().splitlines() if line.strip()
+    ]
 
 
 def last_rotated(rows: list[dict]) -> dict[tuple[str, str], str]:
@@ -108,12 +110,34 @@ def run(cmd: list[str], *, stdin: str | None = None, capture: bool = True) -> st
 
 def doppler_set(project: str, config: str, name: str, value: str) -> None:
     run(
-        ["doppler", "secrets", "set", name, "--project", project, "--config", config, "--silent"], stdin=value
+        [
+            "doppler",
+            "secrets",
+            "set",
+            name,
+            "--project",
+            project,
+            "--config",
+            config,
+            "--silent",
+        ],
+        stdin=value,
     )
 
 
 def doppler_names(project: str, config: str) -> set[str]:
-    out = run(["doppler", "secrets", "--project", project, "--config", config, "--only-names", "--json"])
+    out = run(
+        [
+            "doppler",
+            "secrets",
+            "--project",
+            project,
+            "--config",
+            config,
+            "--only-names",
+            "--json",
+        ]
+    )
     data = json.loads(out)
     names = set(data) if isinstance(data, (dict, list)) else set()
     return names - {"DOPPLER_PROJECT", "DOPPLER_CONFIG", "DOPPLER_ENVIRONMENT"}
@@ -145,12 +169,26 @@ def gh_set(target: str, gh_name: str, value: str) -> None:
 
 
 def aws(*args: str) -> dict:
-    return json.loads(run(["aws", "--profile", AWS_PROFILE, "--output", "json", *args]) or "{}")
+    return json.loads(
+        run(["aws", "--profile", AWS_PROFILE, "--output", "json", *args]) or "{}"
+    )
 
 
 def verify(project: str, config: str, command: str) -> bool:
     p = subprocess.run(
-        ["doppler", "run", "--project", project, "--config", config, "--", "sh", "-c", command], check=False
+        [
+            "doppler",
+            "run",
+            "--project",
+            project,
+            "--config",
+            config,
+            "--",
+            "sh",
+            "-c",
+            command,
+        ],
+        check=False,
     )
     return p.returncode == 0
 
@@ -160,7 +198,11 @@ def machine_name(var: str) -> str:
 
 
 def machine_verify(inv: dict, var: str, config: str) -> str:
-    base = inv["api_base_url"] if config == "prd" else "${KAIANO_API_BASE_URL_DEV:-$KAIANO_API_BASE_URL}"
+    base = (
+        inv["api_base_url"]
+        if config == "prd"
+        else "${KAIANO_API_BASE_URL_DEV:-$KAIANO_API_BASE_URL}"
+    )
     return (
         f'curl -fsS -A {USER_AGENT} -H "Authorization: Bearer ${var}" '
         f'"{base}/v1/identity/whoami" | grep -q \'"{machine_name(var)}"\''
@@ -182,7 +224,9 @@ def cmd_list(args, inv) -> None:
     rows = []
     for name in inv["secrets"]:
         e = entry(inv, name)
-        if e["kind"] == "not-rotated" or (args.tier is not None and e["tier"] != args.tier):
+        if e["kind"] == "not-rotated" or (
+            args.tier is not None and e["tier"] != args.tier
+        ):
             continue
         cadence = inv["cadence_days"].get(e["kind"])
         for cfg in e["configs"] or ["-"]:
@@ -191,7 +235,9 @@ def cmd_list(args, inv) -> None:
             else:
                 # Held outside Doppler (GitHub or Railway only): any config the
                 # ledger recorded it under counts.
-                last = max((at for (n, _), at in seen.items() if n == name), default=None)
+                last = max(
+                    (at for (n, _), at in seen.items() if n == name), default=None
+                )
             if last:
                 age = (today - dt.datetime.fromisoformat(last)).days
                 due = cadence is not None and age >= cadence
@@ -255,9 +301,16 @@ def cmd_rotate(args, inv) -> int:
             if e["kind"] != "not-rotated"
             and (args.tier is None or e["tier"] == args.tier)
             and (not args.kind or e["kind"] == args.kind)
-            and (not args.railway_exposed or e.get("configs", ["prd"]) != [] or e.get("railway"))
+            and (
+                not args.railway_exposed
+                or e.get("configs", ["prd"]) != []
+                or e.get("railway")
+            )
             and n not in names
-            and (not e.get("configs", ["prd"]) or args.config in e.get("configs", ["prd"]))
+            and (
+                not e.get("configs", ["prd"])
+                or args.config in e.get("configs", ["prd"])
+            )
         ]
     if not names:
         sys.exit("nothing selected")
@@ -266,7 +319,9 @@ def cmd_rotate(args, inv) -> int:
         if e["kind"] == "not-rotated":
             sys.exit(f"{n} is marked not-rotated")
         if e["configs"] and args.config not in e["configs"]:
-            sys.exit(f"{n} is not held in Doppler {args.config} (configs: {e['configs']})")
+            sys.exit(
+                f"{n} is not held in Doppler {args.config} (configs: {e['configs']})"
+            )
     mode = "compromised" if args.compromised else "routine"
     cfg = args.config
 
@@ -304,18 +359,24 @@ def cmd_rotate(args, inv) -> int:
                 input("   press Enter when done ")
         elif kind == "aws-access-key":
             user = e["iam_user"]
-            existing = aws("iam", "list-access-keys", "--user-name", user)["AccessKeyMetadata"]
+            existing = aws("iam", "list-access-keys", "--user-name", user)[
+                "AccessKeyMetadata"
+            ]
             if len(existing) >= 2:
                 print(f"   {user} already has two keys; delete the unused one first:")
                 for k in existing:
-                    print(f"     {k['AccessKeyId']} {k['Status']} created {k['CreateDate']}")
+                    print(
+                        f"     {k['AccessKeyId']} {k['Status']} created {k['CreateDate']}"
+                    )
                 continue
             created = aws("iam", "create-access-key", "--user-name", user)["AccessKey"]
             doppler_set(project, cfg, e["id_var"], created["AccessKeyId"])
             doppler_set(project, cfg, n, created["SecretAccessKey"])
             del created["SecretAccessKey"]
             state.update(
-                stored=True, new_key=created["AccessKeyId"], old_aws_keys=[k["AccessKeyId"] for k in existing]
+                stored=True,
+                new_key=created["AccessKeyId"],
+                old_aws_keys=[k["AccessKeyId"] for k in existing],
             )
             print(f"   new key {created['AccessKeyId']} stored")
             if args.compromised:
@@ -350,7 +411,9 @@ def cmd_rotate(args, inv) -> int:
                 if not state["stored"]:
                     continue
             if args.compromised:
-                print(f"   REVOKE NOW: {e.get('revoke', 'revoke the old value at the provider')}")
+                print(
+                    f"   REVOKE NOW: {e.get('revoke', 'revoke the old value at the provider')}"
+                )
                 state["revoked"] = confirm("   old value revoked?")
         done[n] = state
 
@@ -370,7 +433,9 @@ def cmd_rotate(args, inv) -> int:
     # 3. verify ---------------------------------------------------------------
     for n, state in done.items():
         e = entries[n]
-        command = e.get("verify") or (machine_verify(inv, n, cfg) if e["kind"] == "machine-key" else None)
+        command = e.get("verify") or (
+            machine_verify(inv, n, cfg) if e["kind"] == "machine-key" else None
+        )
         if command:
             state["verified"] = verify(project, cfg, command)
             print(f"{n}: {'verified' if state['verified'] else 'VERIFY FAILED'}")
@@ -387,7 +452,14 @@ def cmd_rotate(args, inv) -> int:
                 state["revoked"] = False
                 continue
             for old in state["old_aws_keys"]:
-                aws("iam", "delete-access-key", "--user-name", e["iam_user"], "--access-key-id", old)
+                aws(
+                    "iam",
+                    "delete-access-key",
+                    "--user-name",
+                    e["iam_user"],
+                    "--access-key-id",
+                    old,
+                )
                 print(f"{n}: old key {old} deleted")
             state["revoked"] = True
         elif e["kind"] == "manual" and "revoked" not in state:
@@ -397,7 +469,9 @@ def cmd_rotate(args, inv) -> int:
             state["revoked"] = True  # one value at a time: overwriting it is the revoke
 
     # 5. record ---------------------------------------------------------------
-    by = run(["git", "-C", str(ROOT), "config", "user.email"]).strip() or os.environ.get("USER", "")
+    by = run(
+        ["git", "-C", str(ROOT), "config", "user.email"]
+    ).strip() or os.environ.get("USER", "")
     for n, state in done.items():
         row = {
             "at": now(),
@@ -415,8 +489,12 @@ def cmd_rotate(args, inv) -> int:
             # is what secret scanners match, and the ledger is public.
             row["aws_key_id_last4"] = state["new_key"][-4:]
         record(row)
-    print(f"\nrecorded {len(done)} rotation(s) in {LEDGER.relative_to(ROOT)} — commit it")
-    failed = [n for n, s in done.items() if s.get("verified") is False or not s.get("revoked")]
+    print(
+        f"\nrecorded {len(done)} rotation(s) in {LEDGER.relative_to(ROOT)} — commit it"
+    )
+    failed = [
+        n for n, s in done.items() if s.get("verified") is False or not s.get("revoked")
+    ]
     if failed:
         print(f"needs attention: {', '.join(failed)}")
         return 1
@@ -433,11 +511,15 @@ def cmd_verify(args, inv) -> int:
         and cfg in e.get("configs", ["prd"])
         and (e.get("verify") or e["kind"] == "machine-key")
     ]
-    by = run(["git", "-C", str(ROOT), "config", "user.email"]).strip() or os.environ.get("USER", "")
+    by = run(
+        ["git", "-C", str(ROOT), "config", "user.email"]
+    ).strip() or os.environ.get("USER", "")
     failed = []
     for n in names:
         e = entry(inv, n)
-        command = e.get("verify") or (machine_verify(inv, n, cfg) if e["kind"] == "machine-key" else None)
+        command = e.get("verify") or (
+            machine_verify(inv, n, cfg) if e["kind"] == "machine-key" else None
+        )
         if not command:
             print(f"{n}: no automatic check")
             continue
@@ -480,12 +562,26 @@ def cmd_pg_roles(args, inv) -> int:
     urls = e.get("also", [])
     if not urls:
         sys.exit(f"{args.name} lists no database URLs under also:")
-    admin = getpass.getpass("paste the superuser DATABASE_PUBLIC_URL (hidden): ").strip()
+    admin = getpass.getpass(
+        "paste the superuser DATABASE_PUBLIC_URL (hidden): "
+    ).strip()
     run(["psql", admin, "-qAtc", "select 1"])
-    by = run(["git", "-C", str(ROOT), "config", "user.email"]).strip() or os.environ.get("USER", "")
+    by = run(
+        ["git", "-C", str(ROOT), "config", "user.email"]
+    ).strip() or os.environ.get("USER", "")
     for var in urls:
         current = run(
-            ["doppler", "secrets", "get", var, "--project", project, "--config", cfg, "--plain"]
+            [
+                "doppler",
+                "secrets",
+                "get",
+                var,
+                "--project",
+                project,
+                "--config",
+                cfg,
+                "--plain",
+            ]
         ).strip()
         role = urllib.parse.urlsplit(current).username
         if not role or role == "postgres":
@@ -500,7 +596,12 @@ def cmd_pg_roles(args, inv) -> int:
         # The URL's own host is private (*.railway.internal); check over the admin's public host.
         ok = (
             subprocess.run(
-                ["psql", _with_password(current, password, host_from=admin), "-qAtc", "select 1"],
+                [
+                    "psql",
+                    _with_password(current, password, host_from=admin),
+                    "-qAtc",
+                    "select 1",
+                ],
                 capture_output=True,
                 text=True,
                 check=False,
@@ -528,7 +629,9 @@ def cmd_pg_roles(args, inv) -> int:
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     sub = p.add_subparsers(dest="cmd", required=True)
 
     pl = sub.add_parser("list", help="every secret, last rotation and when it is due")
@@ -553,13 +656,19 @@ def main() -> int:
     )
     pr.add_argument("--dry-run", action="store_true")
 
-    pv = sub.add_parser("verify", help="re-run checks for rotated secrets and record the result")
+    pv = sub.add_parser(
+        "verify", help="re-run checks for rotated secrets and record the result"
+    )
     pv.add_argument("names", nargs="*")
     pv.add_argument("--kind")
     pv.add_argument("--config", default="prd")
 
-    pp = sub.add_parser("pg-roles", help="rotate the role passwords behind a Postgres entry's URLs")
-    pp.add_argument("name", help="a Postgres entry, e.g. POSTGRES_KAIANOLEVINE_PASSWORD")
+    pp = sub.add_parser(
+        "pg-roles", help="rotate the role passwords behind a Postgres entry's URLs"
+    )
+    pp.add_argument(
+        "name", help="a Postgres entry, e.g. POSTGRES_KAIANOLEVINE_PASSWORD"
+    )
     pp.add_argument("--reason", required=True)
     pp.add_argument("--compromised", action="store_true")
     pp.add_argument("--config", default="prd")
