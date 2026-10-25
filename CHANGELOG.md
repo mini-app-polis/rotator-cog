@@ -1,3 +1,15 @@
+# [1.2.0](https://github.com/mini-app-polis/rotator-cog/compare/v1.1.0...v1.2.0) (2026-10-25)
+
+
+### Bug Fixes
+
+* **secrets:** list the rotator's Railway project tokens per environment ([fafdafe](https://github.com/mini-app-polis/rotator-cog/commit/fafdafea0f52f692d1d9ec223bc474fd6d57d92f))
+
+
+### Features
+
+* **worker:** mint the new value and hand it over in Doppler in two phases, refusing secrets also held in GitHub ([7f82292](https://github.com/mini-app-polis/rotator-cog/commit/7f82292d2c1fd7f427259d6051926289858aa2dc))
+
 # [1.1.0](https://github.com/mini-app-polis/rotator-cog/compare/v1.0.0...v1.1.0) (2026-10-25)
 
 
