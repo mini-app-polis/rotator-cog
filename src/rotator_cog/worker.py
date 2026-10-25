@@ -41,8 +41,12 @@ Store (RAILWAY_TOKEN_PRD_PARAMETER, RAILWAY_TOKEN_DEV_PARAMETER). Phase 1
 redeploys only the service that accepts the key; phase 2 and a compromised
 rotation redeploy every service the entry lists.
 
-Verifying is not built yet, so a valid job is reported as not rotated and
-nothing is written; a sweep is acknowledged and logged.
+Then the new key is checked: ``GET /v1/identity/whoami`` with it, at the
+config's API, must name the machine. The rotation is recorded with the API
+(``POST /v1/secrets/rotation-events``) as ok or failed, and any failure after
+the value is minted (a write, a redeploy, the check) is recorded as failed
+and fails the job. The run report goes to the runs channel, and a failure's
+to errors as well. A sweep is acknowledged and logged.
 """
 
 from __future__ import annotations
@@ -51,14 +55,18 @@ import importlib
 import os
 import secrets as pysecrets
 from collections.abc import Callable, Mapping
+from datetime import UTC, datetime
 from importlib import resources
 from pathlib import Path
 from typing import Any
 
+import httpx
 import yaml
 from mini_app_polis import load_secrets, timing
 from mini_app_polis import logger as logger_mod
+from mini_app_polis.api import KaianoApiClient
 from mini_app_polis.api.contract import (
+    RotationEventCreate,
     RotationJobMessage,
     RotationRequest,
     RotationSweepMessage,
@@ -82,8 +90,16 @@ log = logger_mod.get_logger()
 REPO = "rotator-cog"
 FLOW_NAME = "rotate-secret"
 
-#: The kinds the worker rotates. The others are rotated with scripts/rotate.py.
-WORKER_KINDS = frozenset({"machine-key", "generated"})
+#: This cog's name to the API, which picks its key; also the actor recorded.
+MACHINE_NAME = "rotator-cog"
+
+#: The kinds the worker rotates. The others are rotated with scripts/rotate.py:
+#: a generated secret's check runs under the doppler CLI, which the function
+#: does not have.
+WORKER_KINDS = frozenset({"machine-key"})
+
+#: Cloudflare blocks default library user agents.
+USER_AGENT = "mini-app-polis-rotator/1"
 
 #: Where each config's Doppler token is: the environment variable naming
 #: its Parameter Store path.
@@ -124,8 +140,11 @@ init_sentry(REPO)
 #: given for it (None: not set); raises on failure.
 #: (config, {service: {variable: value or None}}) -> None
 Redeployer = Callable[[str, Mapping[str, Mapping[str, str | None]]], None]
-#: Whether the new value works: (name, entry, config, value) -> ok.
-Verifier = Callable[[str, Mapping[str, Any], str, str], bool]
+#: Checks the new value: (name, entry, config, value) -> None when it works,
+#: else why not, in a sentence that never quotes the value.
+Verifier = Callable[[str, Mapping[str, Any], str, str], str | None]
+#: Records one rotation event with the API.
+Recorder = Callable[[RotationEventCreate], None]
 
 
 class InvalidJob(Exception):
@@ -161,6 +180,65 @@ def validate(job: RotationRequest, inventory: Mapping[str, Any]) -> dict[str, An
     if ACCEPTING_SERVICE not in entry.get("redeploy", []):
         raise InvalidJob(f"{ACCEPTING_SERVICE} is not in its redeploy list")
     return dict(entry)
+
+
+def machine_name(var: str) -> str:
+    """The machine a key belongs to: DEEJAY_COG_API_KEY -> deejay-cog."""
+    return var.removesuffix("_API_KEY").lower().replace("_", "-")
+
+
+def machine_verifier(
+    inventory: Mapping[str, Any], *, transport: httpx.BaseTransport | None = None
+) -> Verifier:
+    """Check a machine key against the config's API: whoami must name it."""
+    bases = {"prd": inventory["api_base_url"], "dev": inventory["api_base_url_dev"]}
+
+    def verify(
+        name: str, entry: Mapping[str, Any], config: str, value: str
+    ) -> str | None:
+        machine = machine_name(name)
+        with httpx.Client(timeout=15.0, transport=transport) as client:
+            try:
+                response = client.get(
+                    f"{bases[config]}/v1/identity/whoami",
+                    headers={
+                        "Authorization": f"Bearer {value}",
+                        "User-Agent": USER_AGENT,
+                    },
+                )
+            except httpx.HTTPError as exc:
+                return f"whoami could not be asked: {type(exc).__name__}"
+        if response.status_code != 200:
+            return f"whoami answered HTTP {response.status_code}"
+        try:
+            subject = response.json()["verified"]["subject"]
+        except (ValueError, KeyError, TypeError):
+            return "whoami answered without a subject"
+        if subject != machine:
+            return f"whoami named another machine, not {machine}"
+        return None
+
+    return verify
+
+
+def api_recorder() -> Recorder:
+    """Record through the API with this cog's own key."""
+
+    def record(event: RotationEventCreate) -> None:
+        KaianoApiClient.from_env(MACHINE_NAME).record_rotation_event(event)
+
+    return record
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _reason(exc: BaseException) -> str:
+    """Why a rotation failed, from an error that names no value."""
+    if isinstance(exc, doppler_mod.DopplerError | railway_mod.RailwayError):
+        return str(exc)[:500]
+    return f"{type(exc).__name__} during the rotation"
 
 
 def mint(inventory: Mapping[str, Any], config: str) -> str:
@@ -264,6 +342,8 @@ def rotate(
             inventory=inventory,
             report=report,
             redeploy=railway_redeployer(),
+            verify=machine_verifier(inventory),
+            record=api_recorder(),
         )
 
 
@@ -276,18 +356,20 @@ def _rotate(
     report: Any,
     redeploy: Redeployer | None = None,
     verify: Verifier | None = None,
+    record: Recorder | None = None,
     doppler_factory: Callable[[str, str, str], doppler_mod.Doppler] = (
         doppler_mod.Doppler
     ),
+    now: Callable[[], datetime] = _now,
 ) -> None:
-    """Mint the new value, hand it over in Doppler, redeploy and verify.
+    """Mint the new value, hand it over in Doppler, redeploy, verify and record.
 
-    Nothing is written unless both redeploy and verify are there: a
+    Nothing is written unless redeploy, verify and record are all there: a
     handover stopped between its phases would leave a live key in
     NAME_PREVIOUS that nothing retires.
     """
     label = f"{job.name} in {job.config}"
-    if redeploy is None or verify is None:
+    if redeploy is None or verify is None or record is None:
         report.issue("rotation not built yet", label)
         return
     store = doppler_factory(inventory["doppler_project"], job.config, token)
@@ -295,31 +377,53 @@ def _rotate(
     if old is None:
         report.issue("not in Doppler", label)
         return
+    minted = now()
+    retired: datetime | None = None
     new = mint(inventory, job.config)
+
+    def event(reason: str | None) -> RotationEventCreate:
+        return RotationEventCreate(
+            name=job.name,
+            config=job.config,
+            kind=entry["kind"],
+            mode=job.mode,
+            actor=MACHINE_NAME,
+            minted=minted,
+            retired=retired,
+            verification="ok" if reason is None else "failed",
+            verification_reason=reason,
+        )
+
     name, previous = job.name, doppler_mod.previous_name(job.name)
     callers = [s for s in entry["redeploy"] if s != ACCEPTING_SERVICE]
-    if job.mode == "compromised":
-        doppler_mod.replace(store, name, new)
-        accepted: dict[str, str | None] = {name: new, previous: None}
-    else:
-        doppler_mod.stage(store, name, new)
-        # Phase 1: the accepting service learns the new key; callers keep NAME.
-        redeploy(job.config, {ACCEPTING_SERVICE: {name: old, previous: new}})
-        doppler_mod.promote(store, name, new, old)
-        accepted = {name: new, previous: old}
-    del old
-    # Phase 2 (or the compromised write): every service takes the new key.
-    redeploy(
-        job.config,
-        {ACCEPTING_SERVICE: accepted, **{s: {name: new} for s in callers}},
-    )
-    del accepted
-    ok = verify(job.name, entry, job.config, new)
-    del new
-    if ok:
+    try:
+        if job.mode == "compromised":
+            doppler_mod.replace(store, name, new)
+            retired = now()
+            accepted: dict[str, str | None] = {name: new, previous: None}
+        else:
+            doppler_mod.stage(store, name, new)
+            # Phase 1: the accepting service learns the new key; callers keep NAME.
+            redeploy(job.config, {ACCEPTING_SERVICE: {name: old, previous: new}})
+            doppler_mod.promote(store, name, new, old)
+            accepted = {name: new, previous: old}
+        # Phase 2 (or the compromised write): every service takes the new key.
+        redeploy(
+            job.config,
+            {ACCEPTING_SERVICE: accepted, **{s: {name: new} for s in callers}},
+        )
+        del accepted
+        reason = verify(job.name, entry, job.config, new)
+    except Exception as exc:
+        record(event(_reason(exc)))
+        raise
+    finally:
+        del old, new
+    record(event(reason))
+    if reason is None:
         report.updated("rotated", label)
     else:
-        report.issue("verification failed", label)
+        report.issue("verification failed", label, detail=reason)
 
 
 def process_message(body: str, *, run_id: str, **kwargs: Any) -> None:
