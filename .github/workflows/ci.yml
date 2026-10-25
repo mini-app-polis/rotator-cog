@@ -1,0 +1,112 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Delegates to the fleet's shared security workflow: gitleaks over full
+  # history, the dependency audit against the resolved set, and semgrep.
+  security:
+    uses: mini-app-polis/.github/.github/workflows/security.yml@v3
+    with:
+      language: python
+      package-manager: uv
+
+  # Lock check, lint, format, coverage and typecheck, from the shared
+  # workflow so every cog's `test` stage is the same stage (CD-026). It is
+  # the union of what the cogs ran inline, so adopting it loses nothing —
+  # the CD-020 lock check this job used to spell out is in there.
+  test:
+    uses: mini-app-polis/.github/.github/workflows/python-test.yml@v3
+    with:
+      # TEST-006: coverage measured on every run, reported in the terminal.
+      pytest-args: "--cov=rotator_cog --cov-report=term-missing"
+      # TEST-012: every Python repo typechecks in CI, against its [tool.mypy].
+      typecheck: "uv run mypy src/"
+      # No terraform-dir: the cog's infra is declared in mini-app-polis/infra,
+      # as for the other Lambda cogs.
+
+  release:
+    name: Release
+    needs: [test, security]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    outputs:
+      tag: ${{ steps.released.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # uv + Python are required by the @semantic-release/exec step.
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+      - name: Set up Python
+        run: uv python install 3.11
+      - name: Install dependencies
+        run: uv sync --all-extras
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: Install semantic-release plugins
+        run: |
+          npm install --no-save \
+            semantic-release \
+            @semantic-release/changelog \
+            @semantic-release/commit-analyzer \
+            @semantic-release/exec \
+            @semantic-release/git \
+            @semantic-release/github \
+            @semantic-release/release-notes-generator
+
+      - name: Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx semantic-release
+
+      # semantic-release tags the release commit it leaves at HEAD. No tag
+      # there means this run released nothing — but a re-run of a release
+      # that failed after pushing its tag (attempt 1 of 2.3.0) releases
+      # nothing either, while the tag it should deploy sits on main's tip,
+      # one commit past the merge this run checked out. So: the tag at HEAD,
+      # else the tag on main's tip when that tip is a release commit whose
+      # parent is this run's commit. Anything else deploys nothing.
+      - name: Record the release tag
+        id: released
+        run: |
+          tag="$(git tag --points-at HEAD --list 'v*' | head -n1)"
+          if [ -z "$tag" ]; then
+            git fetch --quiet --tags origin main
+            tip="$(git rev-parse FETCH_HEAD)"
+            if [ "$(git rev-parse "$tip^")" = "$GITHUB_SHA" ]; then
+              tag="$(git tag --points-at "$tip" --list 'v*' | head -n1)"
+            fi
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  # No deploy job yet: the worker and the Lambda it deploys to come later.
+  # When they do, this takes the shared lambda-deploy.yml job the other
+  # Lambda cogs run, after release.
+
+  # Conformance is graded when the repository changes, and this is where
+  # that is said. The evaluation runs after this job ends, so what the job
+  # reports is whether the request landed — never what was found.
+  evaluate:
+    needs: release
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    uses: mini-app-polis/.github/.github/workflows/evaluate.yml@v3
+    secrets:
+      api-key: ${{ secrets.CI_VALIDATOR_API_KEY }}

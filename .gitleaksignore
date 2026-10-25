@@ -1,0 +1,8 @@
+# Findings reviewed and accepted. Format: <commit>:<file>:<rule>:<line>.
+#
+# AWS access key ids (not secrets on their own) that scripts/rotate.py
+# recorded in the record before it kept only the last four characters.
+# The commit is the one the history import from mini-app-polis/infra
+# rewrote; infra's own .gitleaksignore lists it under its original id.
+e8e83abfe72c165eda9bac1e440326c7419782e7:secrets/rotations.jsonl:aws-access-token:74
+e8e83abfe72c165eda9bac1e440326c7419782e7:secrets/rotations.jsonl:aws-access-token:75

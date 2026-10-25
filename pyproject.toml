@@ -1,0 +1,68 @@
+[project]
+name = "rotator-cog"
+dynamic = ["version"]
+description = "Rotates the fleet's secrets and records each rotation. Holds the inventory of every credential the fleet holds, the record of rotations and the rotation script."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pyyaml>=6.0,<7.0",
+]
+
+[dependency-groups]
+dev = [
+    "mypy",
+    "pre-commit",
+    "pytest",
+    "pytest-cov",
+    "ruff",
+    "types-pyyaml",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/rotator_cog/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rotator_cog"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "ASYNC"]
+ignore = ["E501", "B008"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["rotator_cog"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "tests/unit"]
+testpaths = ["tests/unit"]
+addopts = "--cov=rotator_cog --cov-report=term-missing"
+
+[tool.mypy]
+python_version = "3.11"
+strict = false
+ignore_missing_imports = true
+
+[tool.coverage.report]
+# TEST-019: CI fails below this floor. Raise it as coverage rises; lowering it is a reviewed edit.
+fail_under = 85
+
+[tool.uv]
+# The uv minor every lock in the fleet is written with. A range, not an exact
+# pin: Dependabot runs its own single uv and refuses to update a repository
+# whose pin excludes it, and it follows uv's patch releases. setup-uv reads
+# this in CI and installs the newest uv inside the range; a uv outside it
+# refuses to run instead of rewriting the lock's revision. Moving to a new
+# minor is a fleet sweep: bump this everywhere, then re-lock, in commits of
+# their own.
+required-version = ">=0.13.0,<0.14"

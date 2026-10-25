@@ -1,0 +1,15 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.13
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+  # SEC-001. Secrets reach this repo's runtime through Doppler and SSM, but
+  # nothing stops one being pasted into a file and committed. Bypassable
+  # with --no-verify, and deliberately not the fleet-wide control — the CI
+  # gitleaks pass over full history is that.
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.0
+    hooks:
+      - id: gitleaks

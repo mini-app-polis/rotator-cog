@@ -1,0 +1,8 @@
+# rotator-cog / evaluator.yaml
+# Per-repo evaluation configuration — ecosystem-standards ADR-0001, ADR-0002
+
+type: pipeline-cog
+
+# A queue-driven Lambda worker, like the other pipeline cogs: its queue and
+# dead-letter queue, the function, the event source mapping, the schedule
+# and the alarms are declared in mini-app-polis/infra.
