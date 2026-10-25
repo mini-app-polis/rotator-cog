@@ -14,7 +14,9 @@ Infra's schedule sends one ``rotation.sweep`` per config each day. A sweep:
    24 to 48 hours after its last use.
 2. **Rotates one due key**, the most overdue, inline, and only on a day that
    retired nothing, so a run fits the function's timeout; a backlog clears a
-   key a day per config. A key is due once its cadence has passed since its
+   key a day per config. A key whose services are not ready for it (one not
+   in the config's Railway environment, or a variable not referenced) is
+   reported and passed over for the next most overdue. A key is due once its cadence has passed since its
    latest rotation, or when it has never been rotated. A key whose previous
    key is still live is not rotated again: a second handover would cut its
    callers off. A latest rotation that failed is reported, not retried: it

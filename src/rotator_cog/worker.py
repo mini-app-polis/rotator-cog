@@ -428,6 +428,22 @@ def railway_checker(
     return check
 
 
+def _needs(job: RotationRequest, entry: Mapping[str, Any]) -> dict[str, list[str]]:
+    """What each service must hold before the job's rotation can start.
+
+    A routine handover waits for the accepting service to hold NAME_PREVIOUS;
+    a compromised one only for it to be gone, which an unreferenced one is.
+    An AWS key's services take both of its parts.
+    """
+    name = job.name
+    if entry["kind"] == "aws-access-key":
+        return {service: [entry["id_var"], name] for service in entry["redeploy"]}
+    previous = doppler_mod.previous_name(name)
+    accepting = [name, previous] if job.mode == "routine" else [name]
+    callers = [s for s in entry["redeploy"] if s != ACCEPTING_SERVICE]
+    return {ACCEPTING_SERVICE: accepting, **{s: [name] for s in callers}}
+
+
 def _not_ready(
     check: Checker,
     config: str,
@@ -532,15 +548,8 @@ def _rotate(
     store = doppler_factory(inventory["doppler_project"], job.config, token)
     name, previous = job.name, doppler_mod.previous_name(job.name)
     callers = [s for s in entry["redeploy"] if s != ACCEPTING_SERVICE]
-    # A routine handover waits for the accepting service to hold NAME_PREVIOUS;
-    # a compromised one only for it to be gone, which an unreferenced one is.
-    accepting = [name, previous] if job.mode == "routine" else [name]
     if check is not None and _not_ready(
-        check,
-        job.config,
-        {ACCEPTING_SERVICE: accepting, **{s: [name] for s in callers}},
-        report=report,
-        label=label,
+        check, job.config, _needs(job, entry), report=report, label=label
     ):
         return
     old = store.get(job.name)
@@ -618,11 +627,7 @@ def _rotate_aws(
     label = f"{job.name} in {job.config}"
     user, id_var = entry["iam_user"], entry["id_var"]
     if check is not None and _not_ready(
-        check,
-        job.config,
-        {service: [id_var, job.name] for service in entry["redeploy"]},
-        report=report,
-        label=label,
+        check, job.config, _needs(job, entry), report=report, label=label
     ):
         return
     old_keys = aws_keys.existing(iam, user)
@@ -754,7 +759,9 @@ def run_sweep(
                         else None,
                     )
 
-        # 2. Rotate the most overdue key, on a day that retired nothing.
+        # 2. Rotate the most overdue key the services are ready for, on a day
+        #    that retired nothing. A key they are not ready for is reported
+        #    and passed over, so it cannot hold up the rest.
         eligible = []
         for name in inventory["secrets"]:
             try:
@@ -776,22 +783,33 @@ def run_sweep(
         if overdue and not rotating:
             report.note(f"due, not rotated: {SWEEP_ROTATE_VAR} is off", overdue[0])
         if overdue and not ready and rotating:
-            job = sweep_mod.request_for(overdue[0], config)
-            _rotate(
-                job,
-                validate(job, inventory),
-                token,
-                inventory=inventory,
-                report=report,
-                redeploy=redeploy,
-                verify=verifier_factory(inventory),
-                record=record,
-                doppler_factory=doppler_factory,
-                now=now,
-                iam_factory=iam_factory,
-                aws_verify=aws_verify,
-                check=checker_factory(),
-            )
+            check = checker_factory()
+            for name in overdue:
+                job = sweep_mod.request_for(name, config)
+                entry = validate(job, inventory)
+                if _not_ready(
+                    check,
+                    config,
+                    _needs(job, entry),
+                    report=report,
+                    label=f"{name} in {config}",
+                ):
+                    continue
+                _rotate(
+                    job,
+                    entry,
+                    token,
+                    inventory=inventory,
+                    report=report,
+                    redeploy=redeploy,
+                    verify=verifier_factory(inventory),
+                    record=record,
+                    doppler_factory=doppler_factory,
+                    now=now,
+                    iam_factory=iam_factory,
+                    aws_verify=aws_verify,
+                )
+                break
 
         # 3. Drift between Doppler and the inventory.
         unknown, missing = sweep_mod.drift(store.names(), inventory, config)
