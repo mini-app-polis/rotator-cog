@@ -1,3 +1,10 @@
+# [1.3.0](https://github.com/mini-app-polis/rotator-cog/compare/v1.2.0...v1.3.0) (2026-10-25)
+
+
+### Features
+
+* **worker:** redeploy the secret's Railway services once Railway shows the new value, reusing their last image ([95aa8c6](https://github.com/mini-app-polis/rotator-cog/commit/95aa8c6a912077f74d99527ba7e5513c1c568204))
+
 # [1.2.0](https://github.com/mini-app-polis/rotator-cog/compare/v1.1.0...v1.2.0) (2026-10-25)
 
 
