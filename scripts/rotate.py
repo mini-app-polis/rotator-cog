@@ -550,7 +550,7 @@ def cmd_verify(args, inv) -> int:
         if latest:
             api.record(events.rechecked(latest[0], ok))
         else:
-            print(f"   no rotation of {n} recorded for {cfg}; nothing to update")
+            print("   no recorded rotation found; nothing to update")
         if not ok:
             failed.append(n)
     return 1 if failed else 0
