@@ -18,17 +18,17 @@ in Doppler.
   only, so rotate.py imports them and stays a plain `uv run` script.
 - `src/rotator_cog/worker.py`: the Lambda worker behind rotator-cog's queue
   (declared in mini-app-polis/infra). It takes `rotation.job` and
-  `rotation.sweep` messages, checks a job against the inventory packaged
-  with it (machine-key and generated kinds only, in a config the secret is
-  held in, and only secrets that live in Doppler alone), and reads that
-  config's Doppler token from Parameter Store. A routine rotation hands the
-  new value over in two phases (`NAME_PREVIOUS` first, so the API accepts
-  it before callers switch); a compromised one replaces it at once. After
-  each write it waits for Railway to show the new value, then redeploys the
-  services that read it with that config's Railway project token, reusing
-  their last image. Verifying is not built yet, so a valid job writes
-  nothing and is reported as not rotated, and a sweep is acknowledged. CI
-  deploys it after each release.
+  `rotation.sweep` messages. A job is checked against the inventory packaged
+  with it: machine keys only, in a config the key is held in, and only keys
+  that live in Doppler alone (the rest are rotated with rotate.py). A routine
+  rotation hands the new key over in two phases (`NAME_PREVIOUS` first, so
+  the API accepts it before callers switch); a compromised one replaces it
+  at once. After each write the worker waits for Railway to show the new
+  value, then redeploys the services that read it with that config's
+  Railway project token, reusing their last image. It then checks the key
+  with `GET /v1/identity/whoami` at the config's API and records the
+  rotation as ok or failed. A sweep is acknowledged and logged. CI deploys
+  the worker after each release.
 
 These came here from mini-app-polis/infra with their history.
 

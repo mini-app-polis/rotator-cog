@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 from typing import Any
 
@@ -30,10 +31,12 @@ INVENTORY = {
             "configs": ["prd", "dev"],
             "github": ["org:mini-app-polis"],
         },
-        "GITHUB_WEBHOOK_SECRET": {"kind": "generated", "steps": "paste it"},
+        "MANUAL_STEP_API_KEY": {"kind": "machine-key", "steps": "paste it"},
     },
     "doppler_project": "proj",
     "key_prefix": {"dev": "dev_"},
+    "api_base_url": "https://api.test.invalid",
+    "api_base_url_dev": "https://dev-api.test.invalid",
 }
 
 
@@ -79,8 +82,23 @@ class FakeSsm:
 
 
 def test_the_inventory_loads_and_holds_every_kind_the_worker_rotates() -> None:
-    kinds = {e["kind"] for e in worker.load_inventory()["secrets"].values()}
+    inventory = worker.load_inventory()
+    kinds = {e["kind"] for e in inventory["secrets"].values()}
     assert worker.WORKER_KINDS <= kinds
+    assert inventory["api_base_url_dev"].startswith("https://")
+
+
+def test_every_machine_key_the_worker_takes_names_its_machine_and_the_api() -> None:
+    inventory = worker.load_inventory()
+    taken = [
+        n
+        for n, e in inventory["secrets"].items()
+        if e["kind"] == "machine-key" and not e.get("github") and not e.get("steps")
+    ]
+    assert taken
+    for n in taken:
+        assert n.endswith("_API_KEY")
+        assert worker.ACCEPTING_SERVICE in inventory["secrets"][n]["redeploy"]
 
 
 def test_the_wheel_carries_the_inventory_inside_the_package() -> None:
@@ -99,7 +117,7 @@ def test_the_wheel_carries_the_inventory_inside_the_package() -> None:
 
 def test_a_job_for_a_listed_worker_kind_in_a_config_it_is_held_in_passes() -> None:
     assert worker.validate(_job(config="dev"), INVENTORY)["kind"] == "machine-key"
-    assert worker.validate(_job("TICK_SECRET"), INVENTORY)["kind"] == "generated"
+    assert worker.validate(_job(config="prd"), INVENTORY)["kind"] == "machine-key"
 
 
 @pytest.mark.parametrize(
@@ -107,10 +125,11 @@ def test_a_job_for_a_listed_worker_kind_in_a_config_it_is_held_in_passes() -> No
     [
         (_job("NOT_LISTED"), "not in the inventory"),
         (_job("OPENAI_API_KEY"), "kind manual is not rotated by the worker"),
+        (_job("TICK_SECRET"), "kind generated is not rotated by the worker"),
         # No configs means prd only.
-        (_job("TICK_SECRET", "dev"), "not held in dev"),
+        (_job("LONE_API_KEY", "dev"), "not held in dev"),
         (_job("CI_VALIDATOR_API_KEY"), "also held in GitHub"),
-        (_job("GITHUB_WEBHOOK_SECRET"), "needs a manual step"),
+        (_job("MANUAL_STEP_API_KEY"), "needs a manual step"),
         (_job("LONE_API_KEY"), "api-kaianolevine-com is not in its redeploy list"),
     ],
 )
@@ -179,16 +198,20 @@ def test_a_rejected_job_is_reported_and_reads_no_token(posted: list[tuple]) -> N
     assert "OPENAI_API_KEY in prd" in kwargs["text"]
 
 
-def test_a_valid_job_reads_its_configs_token_and_is_reported_not_rotated(
-    posted: list[tuple],
+def test_a_valid_job_reads_its_configs_token_and_runs_every_step(
+    monkeypatch: pytest.MonkeyPatch, posted: list[tuple]
 ) -> None:
+    seen: dict[str, Any] = {}
+
+    def fake_rotate(job: Any, entry: Any, token: str, **kwargs: Any) -> None:
+        seen.update(token=token, **kwargs)
+
+    monkeypatch.setattr(worker, "_rotate", fake_rotate)
     read: list[str] = []
     _rotate(_job(config="dev"), read)
-    assert read == ["dev"]
-    ((args, kwargs),) = posted
-    assert str(args[1]).endswith("WARN")
-    assert "rotation not built yet" in kwargs["text"]
-    assert TOKEN not in json.dumps([args, kwargs], default=str)
+    assert read == ["dev"] and seen["token"] == TOKEN
+    for step in ("redeploy", "verify", "record"):
+        assert callable(seen[step])
 
 
 def test_a_token_that_cannot_be_read_fails_the_job(posted: list[tuple]) -> None:
@@ -235,6 +258,8 @@ def _handover(
 ) -> tuple[Report, list[Any]]:
     """Run a job through _rotate, recording each redeploy against Doppler's state."""
     steps: list[Any] = []
+    global _LAST_STEPS
+    _LAST_STEPS = steps
     report = Report()
 
     def redeploy(cfg: str, targets: Any) -> None:
@@ -242,9 +267,12 @@ def _handover(
         if redeploy_fails:
             raise RuntimeError("redeploy failed")
 
-    def verify(name: str, entry: Any, cfg: str, value: str) -> bool:
+    def verify(name: str, entry: Any, cfg: str, value: str) -> str | None:
         steps.append(("verify", value == fake.secrets[name]))
-        return ok
+        return None if ok else "whoami answered HTTP 401"
+
+    def record(event: Any) -> None:
+        steps.append(("record", event))
 
     job = RotationRequest(name="DEEJAY_COG_API_KEY", config=config, mode=mode)  # type: ignore[arg-type]
     worker._rotate(
@@ -255,14 +283,20 @@ def _handover(
         report=report,
         redeploy=redeploy,
         verify=verify,
+        record=record,
         doppler_factory=lambda project, cfg, token: doppler.Doppler(
             project, cfg, token, transport=httpx.MockTransport(fake.handle)
         ),
+        now=lambda: NOW,
     )
     return report, steps
 
 
+NOW = dt.datetime(2026, 10, 25, 14, 0, tzinfo=dt.UTC)
+
+
 KEY, PREV = "DEEJAY_COG_API_KEY", "DEEJAY_COG_API_KEY_PREVIOUS"
+_LAST_STEPS: list[Any] = []
 
 
 def test_a_routine_rotation_hands_over_in_two_phases() -> None:
@@ -286,6 +320,15 @@ def test_a_routine_rotation_hands_over_in_two_phases() -> None:
         {"api-kaianolevine-com": {KEY: new, PREV: "old"}, "db-poller": {KEY: new}},
     )
     assert steps[2] == ("verify", True)
+    event = steps[3][1]
+    assert (event.name, event.config, event.kind, event.mode) == (
+        KEY,
+        "dev",
+        "machine-key",
+        "routine",
+    )
+    assert (event.actor, event.minted, event.retired) == ("rotator-cog", NOW, None)
+    assert (event.verification, event.verification_reason) == ("ok", None)
     assert report.lines == [("updated", "rotated")]
 
 
@@ -302,19 +345,58 @@ def test_a_compromised_rotation_is_one_write_with_no_previous_slot() -> None:
         {"api-kaianolevine-com": {KEY: new, PREV: None}, "db-poller": {KEY: new}},
     )
     assert steps[1] == ("verify", True)
+    event = steps[2][1]
+    assert event.mode == "compromised" and event.retired == NOW
+    assert event.verification == "ok"
     assert report.lines == [("updated", "rotated")]
 
 
-def test_a_failed_verification_is_reported() -> None:
-    report, _ = _handover(FakeDoppler({KEY: "old"}), ok=False)
+def test_a_failed_verification_is_recorded_failed_and_reported() -> None:
+    report, steps = _handover(FakeDoppler({KEY: "old"}), ok=False)
+    event = steps[-1][1]
+    assert event.verification == "failed"
+    assert event.verification_reason == "whoami answered HTTP 401"
     assert report.lines == [("issue", "verification failed")]
 
 
-def test_a_failed_redeploy_stops_before_callers_switch() -> None:
+def test_a_failed_redeploy_is_recorded_failed_before_callers_switch() -> None:
     fake = FakeDoppler({KEY: "old"})
     with pytest.raises(RuntimeError, match="redeploy failed"):
         _handover(fake, redeploy_fails=True)
     assert fake.secrets[KEY] == "old"
+    # Its own message is not trusted to be free of values: only its type.
+    (event,) = [s[1] for s in _LAST_STEPS if s[0] == "record"]
+    assert event.verification == "failed"
+    assert event.verification_reason == "RuntimeError during the rotation"
+
+
+def test_a_railway_error_is_recorded_with_its_own_message() -> None:
+    from rotator_cog.railway import RailwayError
+
+    recorded: list[Any] = []
+
+    def redeploy(cfg: str, targets: Any) -> None:
+        raise RailwayError("deployment d-1 ended CRASHED")
+
+    with pytest.raises(RailwayError):
+        worker._rotate(
+            _job(config="dev"),
+            INVENTORY["secrets"][KEY],
+            TOKEN,
+            inventory=INVENTORY,
+            report=Report(),
+            redeploy=redeploy,
+            verify=lambda *a: None,
+            record=recorded.append,
+            doppler_factory=lambda project, cfg, token: doppler.Doppler(
+                project,
+                cfg,
+                token,
+                transport=httpx.MockTransport(FakeDoppler({KEY: "old"}).handle),
+            ),
+            now=lambda: NOW,
+        )
+    assert recorded[0].verification_reason == "deployment d-1 ended CRASHED"
 
 
 def test_a_secret_missing_from_doppler_is_reported_and_nothing_is_written() -> None:
@@ -324,7 +406,7 @@ def test_a_secret_missing_from_doppler_is_reported_and_nothing_is_written() -> N
     assert steps == [] and fake.writes() == []
 
 
-def test_without_redeploy_and_verify_nothing_is_written() -> None:
+def test_without_redeploy_verify_and_record_nothing_is_written() -> None:
     report = Report()
     worker._rotate(
         _job(config="dev"),
@@ -430,6 +512,59 @@ def test_the_railway_token_is_read_from_the_configs_parameter(
     ssm = FakeSsm()
     assert worker.railway_token("prd", client=ssm) == TOKEN
     assert ssm.calls[0]["Name"] == "/rotator/RAILWAY_TOKEN_PRD"
+
+
+# -- checking a machine key ------------------------------------------------
+
+
+def _whoami(status: int = 200, body: Any = None, seen: list | None = None) -> Any:
+    def handle(request: httpx.Request) -> httpx.Response:
+        if seen is not None:
+            seen.append(request)
+        payload = {"verified": {"subject": "deejay-cog"}} if body is None else body
+        return httpx.Response(status, json=payload)
+
+    return worker.machine_verifier(INVENTORY, transport=httpx.MockTransport(handle))
+
+
+def test_machine_names_follow_the_variable() -> None:
+    assert worker.machine_name("DEEJAY_COG_API_KEY") == "deejay-cog"
+    assert worker.machine_name("DB_OPS_API_KEY") == "db-ops"
+
+
+def test_a_key_that_names_its_machine_is_verified_at_the_configs_api() -> None:
+    seen: list[httpx.Request] = []
+    assert _whoami(seen=seen)(KEY, {}, "dev", "dev_new") is None
+    (request,) = seen
+    assert str(request.url) == "https://dev-api.test.invalid/v1/identity/whoami"
+    assert request.headers["Authorization"] == "Bearer dev_new"
+    assert request.headers["User-Agent"] == worker.USER_AGENT
+    seen.clear()
+    _whoami(seen=seen)(KEY, {}, "prd", "new")
+    assert seen[0].url.host == "api.test.invalid"
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "reason"),
+    [
+        (401, {"detail": "no"}, "whoami answered HTTP 401"),
+        (200, {"verified": {"subject": "watcher-cog"}}, "another machine"),
+        (200, {"nothing": 1}, "without a subject"),
+    ],
+)
+def test_a_key_that_fails_whoami_says_why_without_the_value(
+    status: int, body: Any, reason: str
+) -> None:
+    got = _whoami(status, body)(KEY, {}, "prd", "secret-new-value")
+    assert got is not None and reason in got and "secret-new-value" not in got
+
+
+def test_an_api_that_cannot_be_reached_is_a_failed_check() -> None:
+    def fail(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("down")
+
+    verify = worker.machine_verifier(INVENTORY, transport=httpx.MockTransport(fail))
+    assert verify(KEY, {}, "prd", "v") == "whoami could not be asked: ConnectError"
 
 
 # -- messages and the handler ----------------------------------------------
