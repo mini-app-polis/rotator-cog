@@ -1,3 +1,10 @@
+# [1.6.0](https://github.com/mini-app-polis/rotator-cog/compare/v1.5.0...v1.6.0) (2026-10-25)
+
+
+### Features
+
+* **worker:** rotate IAM access keys, deleting the old key only once the new one verifies ([f858935](https://github.com/mini-app-polis/rotator-cog/commit/f858935802ad36b5bda1c40afbf4494170b8d4e0))
+
 # [1.5.0](https://github.com/mini-app-polis/rotator-cog/compare/v1.4.0...v1.5.0) (2026-10-25)
 
 
