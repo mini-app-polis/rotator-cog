@@ -90,7 +90,8 @@ A daily sweep per config (14:00 UTC) does the rest:
   still in use is retired anyway, and the run report names the machine
   still on it.
 - **Rotates the most overdue key**, one per config per day, on a day that
-  retired nothing. A key mid-handover is not rotated again, and one whose
+  retired nothing, once `ROTATOR_SWEEP_ROTATE` is `true` in Doppler prd.
+  Until then it only reports what is due. A key mid-handover is not rotated again, and one whose
   last rotation failed is reported each day rather than retried.
 - **Reports drift**, as `rotate.py check` does, in the run report.
 

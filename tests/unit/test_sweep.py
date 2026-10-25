@@ -235,6 +235,11 @@ def _run(fake: FakeDoppler, api: FakeApi, posted: list) -> list[Any]:
     return steps
 
 
+@pytest.fixture(autouse=True)
+def _rotation_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(worker.SWEEP_ROTATE_VAR, "true")
+
+
 @pytest.fixture
 def posted(monkeypatch: pytest.MonkeyPatch) -> list[tuple]:
     sent: list[tuple] = []
@@ -336,3 +341,38 @@ def test_drift_is_reported_by_name(posted: list) -> None:
     ((args, kwargs),) = posted
     assert "SOMETHING_NEW_TOKEN" in kwargs["text"]
     assert "OPENAI_API_KEY" in kwargs["text"]  # held in prd, missing from Doppler
+
+
+@pytest.mark.parametrize("setting", [None, "", "false", "yes"])
+def test_with_rotation_off_a_due_key_is_reported_not_rotated(
+    posted: list, monkeypatch: pytest.MonkeyPatch, setting: str | None
+) -> None:
+    if setting is None:
+        monkeypatch.delenv(worker.SWEEP_ROTATE_VAR, raising=False)
+    else:
+        monkeypatch.setenv(worker.SWEEP_ROTATE_VAR, setting)
+    fake = FakeDoppler({"DEEJAY_COG_API_KEY": "old-d", "WATCHER_COG_API_KEY": "old-w"})
+    api = FakeApi(
+        [
+            _event("DEEJAY_COG_API_KEY", age=dt.timedelta(days=95), retired=NOW),
+            _event("WATCHER_COG_API_KEY", age=dt.timedelta(days=120), retired=NOW),
+        ]
+    )
+    steps = _run(fake, api, posted)
+    assert fake.secrets["WATCHER_COG_API_KEY"] == "old-w"
+    assert not [s for s in steps if s[0] in ("redeploy", "record")]
+
+
+def test_with_rotation_off_retirement_still_happens(
+    posted: list, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(worker.SWEEP_ROTATE_VAR, raising=False)
+    fake = FakeDoppler(
+        {"DEEJAY_COG_API_KEY": "new-d", "DEEJAY_COG_API_KEY_PREVIOUS": "old-d"}
+    )
+    api = FakeApi(
+        [_event("DEEJAY_COG_API_KEY", age=dt.timedelta(days=2))],
+        last=NOW - dt.timedelta(days=2),
+    )
+    _run(fake, api, posted)
+    assert "DEEJAY_COG_API_KEY_PREVIOUS" not in fake.secrets

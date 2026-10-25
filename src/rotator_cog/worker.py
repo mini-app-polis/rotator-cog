@@ -125,6 +125,11 @@ RAILWAY_ENVIRONMENTS = {"prd": "production", "dev": "development"}
 #: before its callers present it.
 ACCEPTING_SERVICE = "api-kaianolevine-com"
 
+#: The sweep rotates what is due only when this is "true". Unset, it still
+#: retires previous keys and reports what is due and any drift, so the
+#: sweep's own rotations can wait until a rotation has been proven by hand.
+SWEEP_ROTATE_VAR = "ROTATOR_SWEEP_ROTATE"
+
 #: How long Railway may take to show a value Doppler has written, and a
 #: redeploy to be running. Each phase waits for both, so the function's
 #: timeout in mini-app-polis/infra covers two of each.
@@ -635,7 +640,10 @@ def run_sweep(
         for name in failed:
             report.issue("last rotation failed; needs a person", f"{name} in {config}")
         report.count("due", len(overdue))
-        if overdue and not ready:
+        rotating = os.environ.get(SWEEP_ROTATE_VAR, "").strip().lower() == "true"
+        if overdue and not rotating:
+            report.note(f"due, not rotated: {SWEEP_ROTATE_VAR} is off", overdue[0])
+        if overdue and not ready and rotating:
             job = sweep_mod.request_for(overdue[0], config)
             _rotate(
                 job,
