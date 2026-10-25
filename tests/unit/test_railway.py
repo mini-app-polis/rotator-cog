@@ -117,6 +117,12 @@ def test_a_variable_that_should_be_gone_must_be_gone() -> None:
         api.client().wait_for_variables("s-1", {"KEY": None}, timeout=6)
 
 
+def test_variable_names_list_references_even_when_empty() -> None:
+    api = FakeApi()
+    api.variables = [{"KEY": VALUE, "KEY_PREVIOUS": ""}]
+    assert api.client().variable_names("s-1") == {"KEY", "KEY_PREVIOUS"}
+
+
 def test_a_redeploy_reuses_the_last_successful_deployments_image() -> None:
     api = FakeApi()
     assert api.client().redeploy("s-1") == "new-dep-1"
@@ -186,3 +192,65 @@ def test_a_referenced_variable_that_renders_empty_counts_as_gone() -> None:
     api.client().wait_for_variables(
         "s-1", {"KEY": railway.digest(VALUE), "KEY_PREVIOUS": None}, timeout=6
     )
+
+
+# -- retries ---------------------------------------------------------------
+
+
+def _flaky(failures: list[Any], api: FakeApi) -> httpx.MockTransport:
+    """Fail the first request whose query holds each key, then answer as ``api``."""
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        query = json.loads(request.content)["query"]
+        for op in list(failures):
+            if op[0] in query:
+                failures.remove(op)
+                if isinstance(op[1], Exception):
+                    raise op[1]
+                return httpx.Response(op[1], text="busy")
+        return api.handle(request)
+
+    return httpx.MockTransport(handle)
+
+
+@pytest.mark.parametrize(
+    "failure", [httpx.ConnectError("down"), httpx.ReadTimeout("slow"), 502, 429]
+)
+def test_a_query_that_blips_is_asked_again(failure: Any) -> None:
+    api = FakeApi()
+    client = railway.Railway(
+        TOKEN, transport=_flaky([("projectToken", failure)], api), sleep=Clock().sleep
+    )
+    assert client.project_id == "p"
+
+
+def test_a_query_that_keeps_failing_fails_after_every_attempt() -> None:
+    calls: list[httpx.Request] = []
+
+    def fail(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        raise httpx.ReadTimeout("slow")
+
+    with pytest.raises(railway.RailwayError, match="ReadTimeout"):
+        railway.Railway(TOKEN, transport=httpx.MockTransport(fail))
+    assert len(calls) == railway.ATTEMPTS
+
+
+def test_a_redeploy_that_was_never_sent_is_sent_again() -> None:
+    api = FakeApi()
+    client = railway.Railway(
+        TOKEN,
+        transport=_flaky([("deploymentRedeploy", httpx.ConnectError("down"))], api),
+    )
+    assert client.redeploy("s-1") == "new-dep-1"
+
+
+@pytest.mark.parametrize("failure", [httpx.ReadTimeout("slow"), 502])
+def test_a_redeploy_that_may_have_started_is_not_sent_again(failure: Any) -> None:
+    api = FakeApi()
+    client = railway.Railway(
+        TOKEN, transport=_flaky([("deploymentRedeploy", failure)], api)
+    )
+    with pytest.raises(railway.RailwayError):
+        client.redeploy("s-1")
+    assert not any("deploymentRedeploy" in r["query"] for r in api.requests)

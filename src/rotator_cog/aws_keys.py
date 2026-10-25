@@ -25,6 +25,7 @@ VERIFY_WAIT_SECONDS = 5.0
 
 
 def last4(key_id: str) -> str:
+    """The last four characters of a key id: all of one any record carries."""
     return key_id[-4:]
 
 
@@ -48,10 +49,12 @@ def create(iam: Any, user: str) -> tuple[str, str]:
 
 
 def delete(iam: Any, user: str, key_id: str) -> None:
+    """Delete one of the user's access keys. Nothing can use it again."""
     iam.delete_access_key(UserName=user, AccessKeyId=key_id)
 
 
 def deactivate(iam: Any, user: str, key_id: str) -> None:
+    """Make one of the user's access keys inactive, so it stops working at once."""
     iam.update_access_key(UserName=user, AccessKeyId=key_id, Status="Inactive")
 
 

@@ -149,3 +149,67 @@ def test_retire_deletes_every_previous_slot_in_one_write() -> None:
     doppler.retire(fake.client(), ["A", "B"])
     assert fake.secrets == {"A": "a", "B": "b"}
     assert len(fake.writes()) == 1
+
+
+# -- retries ---------------------------------------------------------------
+
+
+def _flaky(failures: list[Any], fake: FakeDoppler) -> httpx.MockTransport:
+    """Fail with each of ``failures`` in turn (an exception, or a status), then ``fake``."""
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if failures:
+            failure = failures.pop(0)
+            if isinstance(failure, Exception):
+                raise failure
+            return httpx.Response(failure, json={"messages": ["busy"]})
+        return fake.handle(request)
+
+    return httpx.MockTransport(handle)
+
+
+@pytest.mark.parametrize(
+    "failure", [httpx.ConnectError("down"), httpx.ReadTimeout("slow"), 429, 503]
+)
+def test_a_blip_is_asked_again(failure: Any) -> None:
+    fake = FakeDoppler({"KEY": VALUE})
+    client = doppler.Doppler("proj", "dev", TOKEN, transport=_flaky([failure], fake))
+    assert client.get("KEY") == VALUE
+
+
+def test_a_blip_that_lasts_fails_after_every_attempt() -> None:
+    fake = FakeDoppler({"KEY": VALUE}, status=503)
+    with pytest.raises(doppler.DopplerError, match="HTTP 503"):
+        fake.client().get("KEY")
+    assert len(fake.requests) == doppler.ATTEMPTS
+
+
+def test_a_refusal_is_not_asked_again() -> None:
+    fake = FakeDoppler({"KEY": VALUE}, status=401)
+    with pytest.raises(doppler.DopplerError, match="HTTP 401"):
+        fake.client().get("KEY")
+    assert len(fake.requests) == 1
+
+
+def test_a_write_asked_again_lands_once() -> None:
+    fake = FakeDoppler({"KEY": "old"})
+    client = doppler.Doppler(
+        "proj", "dev", TOKEN, transport=_flaky([httpx.ReadTimeout("slow")], fake)
+    )
+    doppler.promote(client, "KEY", VALUE, "old")
+    assert fake.secrets == {"KEY": VALUE, "KEY_PREVIOUS": "old"}
+
+
+def test_an_answer_that_does_not_validate_never_quotes_the_value() -> None:
+    client = doppler.Doppler(
+        "proj",
+        "dev",
+        TOKEN,
+        transport=httpx.MockTransport(
+            lambda r: httpx.Response(200, json={"value": {"raw": [VALUE]}})
+        ),
+    )
+    with pytest.raises(doppler.DopplerError, match="unexpected response") as caught:
+        client.get("KEY")
+    assert VALUE not in str(caught.value)
+    assert caught.value.__suppress_context__

@@ -89,6 +89,7 @@ class _Api:
 
 
 def api(machine_name: str) -> SweepApi:
+    """The API a sweep reads, as ``machine_name``, with its own key."""
     return _Api(machine_name)
 
 
@@ -188,4 +189,5 @@ def retired_event(event: RotationEvent, at: datetime) -> RotationEventCreate:
 
 
 def request_for(name: str, config: str) -> RotationRequest:
+    """The routine rotation job a sweep runs for ``name`` in ``config``."""
     return RotationRequest(name=name, config=config, mode="routine")  # type: ignore[arg-type]

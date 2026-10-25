@@ -48,7 +48,11 @@ SKIP_ORPHAN_VERIFY = "a re-check of a secret with no rotation"
 
 
 class Api(Protocol):
-    def record(self, event: dict[str, Any]) -> dict[str, Any]: ...
+    """The rotation record the import writes to: the API, or a fake in a test."""
+
+    def record(self, event: dict[str, Any]) -> dict[str, Any]:
+        """Write one event, or update the one with the same key."""
+        ...
 
     def list(
         self,
@@ -56,7 +60,9 @@ class Api(Protocol):
         name: str | None = None,
         config: str | None = None,
         latest: bool = False,
-    ) -> list[dict[str, Any]]: ...
+    ) -> list[dict[str, Any]]:
+        """Every matching event, newest minted first; ``latest``: the newest of each."""
+        ...
 
 
 @dataclass

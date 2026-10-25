@@ -34,12 +34,27 @@ rotated, which needs a person, so the queue delivers each message once
 named in ``batchItemFailures`` and lands in the dead-letter queue, whose
 alarm says so.
 
+**Duplicates.** The queue is FIFO with content-based deduplication, so the
+same job asked twice within five minutes is one message. Each rotation is
+recorded keyed on name, config and minted, so recording it again updates
+the one event. The sweep never rotates a key whose previous key is still
+live, and an IAM user with two keys already is refused (docs/decisions,
+ADR-0003).
+
 After each Doppler write the services that read the secret at boot are
 redeployed in the config's Railway environment, once Railway shows the new
 value (railway.py), with a Railway project token per config from Parameter
 Store (RAILWAY_TOKEN_PRD_PARAMETER, RAILWAY_TOKEN_DEV_PARAMETER). Phase 1
 redeploys only the service that accepts the key; phase 2 and a compromised
 rotation redeploy every service the entry lists.
+
+**Ready before anything is written.** Before a value is minted, the config's
+Railway environment is checked: every service the rotation will redeploy is
+there, and each holds every variable it will be waited on for. A service
+sees a shared variable only once it references it, which in development is
+set by hand, so a rotation whose NAME_PREVIOUS no service references would
+otherwise write to Doppler and then time out. A rotation that is not ready
+is reported, with the reference to add, and nothing is written.
 
 Then the new key is checked: ``GET /v1/identity/whoami`` with it, at the
 config's API, must name the machine. The rotation is recorded with the API
@@ -57,7 +72,8 @@ from __future__ import annotations
 import importlib
 import os
 import secrets as pysecrets
-from collections.abc import Callable, Mapping
+import time
+from collections.abc import Callable, Collection, Mapping
 from datetime import UTC, datetime
 from importlib import resources
 from pathlib import Path
@@ -83,6 +99,7 @@ from mini_app_polis.lambda_worker import (
 )
 from mini_app_polis.pipeline_status import post_run_finding, run_report
 from mini_app_polis.sentry import init_sentry
+from pydantic import BaseModel, Field, ValidationError
 
 from . import aws_keys
 from . import doppler as doppler_mod
@@ -136,6 +153,14 @@ SWEEP_ROTATE_VAR = "ROTATOR_SWEEP_ROTATE"
 SYNC_TIMEOUT_SECONDS = 120.0
 DEPLOY_TIMEOUT_SECONDS = 240.0
 
+#: The whoami check of a new key: how long one request may take, how many
+#: are made, and how long between them. The API has just been redeployed,
+#: so a 5xx or a refused connection is worth asking again; a 401 is not.
+VERIFY_TIMEOUT_SECONDS = 15.0
+VERIFY_ATTEMPTS = 3
+VERIFY_RETRY_SECONDS = 5.0
+VERIFY_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+
 #: How long before the function's timeout a run is stopped, leaving room for
 #: the run report and the handler's return.
 DEADLINE_MARGIN_SECONDS = 20
@@ -156,6 +181,11 @@ Redeployer = Callable[[str, Mapping[str, Mapping[str, str | None]]], None]
 Verifier = Callable[[str, Mapping[str, Any], str, str], str | None]
 #: Records one rotation event with the API.
 Recorder = Callable[[RotationEventCreate], None]
+#: Checks, before anything is written, that each service is in the config's
+#: environment and holds each variable named for it (a reference counts, even
+#: one Doppler has not filled): (config, {service: names}) -> what is missing,
+#: one sentence each; empty when ready.
+Checker = Callable[[str, Mapping[str, Collection[str]]], list[str]]
 
 
 class InvalidJob(Exception):
@@ -208,6 +238,18 @@ def machine_name(var: str) -> str:
     return var.removesuffix("_API_KEY").lower().replace("_", "-")
 
 
+class _Verified(BaseModel):
+    """Who the presented credential proved the caller to be."""
+
+    subject: str = Field(..., description="The machine or person's subject.")
+
+
+class _WhoAmI(BaseModel):
+    """GET /v1/identity/whoami: the part the check reads."""
+
+    verified: _Verified = Field(..., description="The verified caller.")
+
+
 def machine_verifier(
     inventory: Mapping[str, Any], *, transport: httpx.BaseTransport | None = None
 ) -> Verifier:
@@ -218,22 +260,35 @@ def machine_verifier(
         name: str, entry: Mapping[str, Any], config: str, value: str
     ) -> str | None:
         machine = machine_name(name)
-        with httpx.Client(timeout=15.0, transport=transport) as client:
+        failure = "no answer"
+        response: httpx.Response | None = None
+        for attempt in range(1, VERIFY_ATTEMPTS + 1):
+            if attempt > 1:
+                time.sleep(VERIFY_RETRY_SECONDS)
             try:
-                response = client.get(
-                    f"{bases[config]}/v1/identity/whoami",
-                    headers={
-                        "Authorization": f"Bearer {value}",
-                        "User-Agent": USER_AGENT,
-                    },
-                )
+                with httpx.Client(
+                    timeout=VERIFY_TIMEOUT_SECONDS, transport=transport
+                ) as client:
+                    response = client.get(
+                        f"{bases[config]}/v1/identity/whoami",
+                        headers={
+                            "Authorization": f"Bearer {value}",
+                            "User-Agent": USER_AGENT,
+                        },
+                    )
             except httpx.HTTPError as exc:
-                return f"whoami could not be asked: {type(exc).__name__}"
+                response = None
+                failure = f"whoami could not be asked: {type(exc).__name__}"
+                continue
+            if response.status_code not in VERIFY_RETRY_STATUSES:
+                break
+        if response is None:
+            return failure
         if response.status_code != 200:
             return f"whoami answered HTTP {response.status_code}"
         try:
-            subject = response.json()["verified"]["subject"]
-        except (ValueError, KeyError, TypeError):
+            subject = _WhoAmI.model_validate_json(response.content).verified.subject
+        except ValidationError:
             return "whoami answered without a subject"
         if subject != machine:
             return f"whoami named another machine, not {machine}"
@@ -341,6 +396,56 @@ def railway_redeployer(
     return redeploy
 
 
+def railway_checker(
+    *,
+    token_reader: Callable[[str], str] = railway_token,
+    railway_factory: Callable[[str], railway_mod.Railway] = railway_mod.Railway,
+) -> Checker:
+    """Check the config's Railway environment is ready, with its project token."""
+
+    def check(config: str, needs: Mapping[str, Collection[str]]) -> list[str]:
+        railway = railway_factory(token_reader(config))
+        environment = railway.environment_name()
+        if environment != RAILWAY_ENVIRONMENTS[config]:
+            return [
+                f"the {config} Railway token reaches {environment}, "
+                f"not {RAILWAY_ENVIRONMENTS[config]}"
+            ]
+        ids = railway.service_ids()
+        gaps: list[str] = []
+        for service, names in needs.items():
+            if service not in ids:
+                gaps.append(f"{service} is not in Railway {environment}")
+                continue
+            held = railway.variable_names(ids[service])
+            gaps.extend(
+                f"{service} in {environment} does not reference {name}: "
+                f"set it to ${{{{shared.{name}}}}}"
+                for name in sorted(set(names) - held)
+            )
+        return gaps
+
+    return check
+
+
+def _not_ready(
+    check: Checker,
+    config: str,
+    needs: Mapping[str, Collection[str]],
+    *,
+    report: Any,
+    label: str,
+) -> bool:
+    """Report what keeps the services from a rotation. True when anything does."""
+    try:
+        gaps = check(config, needs)
+    except railway_mod.RailwayError as exc:
+        gaps = [str(exc)[:500]]
+    for gap in gaps:
+        report.issue("not ready to rotate; nothing was written", label, detail=gap)
+    return bool(gaps)
+
+
 def rotate(
     job: RotationRequest,
     *,
@@ -369,6 +474,7 @@ def rotate(
             record=api_recorder(),
             iam_factory=_iam,
             aws_verify=aws_keys.sts_verifier(),
+            check=railway_checker(),
         )
 
 
@@ -388,12 +494,14 @@ def _rotate(
     now: Callable[[], datetime] = _now,
     iam_factory: Callable[[], Any] | None = None,
     aws_verify: AwsVerifier | None = None,
+    check: Checker | None = None,
 ) -> None:
     """Mint the new value, hand it over in Doppler, redeploy, verify and record.
 
     Nothing is written unless redeploy, verify and record are all there: a
     handover stopped between its phases would leave a live key in
-    NAME_PREVIOUS that nothing retires.
+    NAME_PREVIOUS that nothing retires. Nor is anything written when
+    ``check`` finds the services not ready for it.
     """
     label = f"{job.name} in {job.config}"
     if entry["kind"] == "aws-access-key":
@@ -415,12 +523,26 @@ def _rotate(
             verify=aws_verify,
             record=record,
             now=now,
+            check=check,
         )
         return
     if redeploy is None or verify is None or record is None:
         report.issue("rotation not built yet", label)
         return
     store = doppler_factory(inventory["doppler_project"], job.config, token)
+    name, previous = job.name, doppler_mod.previous_name(job.name)
+    callers = [s for s in entry["redeploy"] if s != ACCEPTING_SERVICE]
+    # A routine handover waits for the accepting service to hold NAME_PREVIOUS;
+    # a compromised one only for it to be gone, which an unreferenced one is.
+    accepting = [name, previous] if job.mode == "routine" else [name]
+    if check is not None and _not_ready(
+        check,
+        job.config,
+        {ACCEPTING_SERVICE: accepting, **{s: [name] for s in callers}},
+        report=report,
+        label=label,
+    ):
+        return
     old = store.get(job.name)
     if old is None:
         report.issue("not in Doppler", label)
@@ -442,8 +564,6 @@ def _rotate(
             verification_reason=reason,
         )
 
-    name, previous = job.name, doppler_mod.previous_name(job.name)
-    callers = [s for s in entry["redeploy"] if s != ACCEPTING_SERVICE]
     try:
         if job.mode == "compromised":
             doppler_mod.replace(store, name, new)
@@ -485,6 +605,7 @@ def _rotate_aws(
     verify: AwsVerifier,
     record: Recorder,
     now: Callable[[], datetime],
+    check: Checker | None = None,
 ) -> None:
     """Rotate one IAM user's access key.
 
@@ -496,6 +617,14 @@ def _rotate_aws(
     """
     label = f"{job.name} in {job.config}"
     user, id_var = entry["iam_user"], entry["id_var"]
+    if check is not None and _not_ready(
+        check,
+        job.config,
+        {service: [id_var, job.name] for service in entry["redeploy"]},
+        report=report,
+        label=label,
+    ):
+        return
     old_keys = aws_keys.existing(iam, user)
     if len(old_keys) >= 2:
         report.issue(
@@ -572,6 +701,7 @@ def run_sweep(
         doppler_mod.Doppler
     ),
     redeploy_factory: Callable[[], Redeployer] = railway_redeployer,
+    checker_factory: Callable[[], Checker] = railway_checker,
     verifier_factory: Callable[[Mapping[str, Any]], Verifier] = machine_verifier,
     recorder_factory: Callable[[], Recorder] = api_recorder,
     now: Callable[[], datetime] = _now,
@@ -660,6 +790,7 @@ def run_sweep(
                 now=now,
                 iam_factory=iam_factory,
                 aws_verify=aws_verify,
+                check=checker_factory(),
             )
 
         # 3. Drift between Doppler and the inventory.
