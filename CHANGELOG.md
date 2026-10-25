@@ -1,3 +1,10 @@
+## [1.7.2](https://github.com/mini-app-polis/rotator-cog/compare/v1.7.1...v1.7.2) (2026-10-25)
+
+
+### Bug Fixes
+
+* **worker:** retry Doppler, Railway and whoami calls and validate their answers; document env, decisions and local runs ([2b672c7](https://github.com/mini-app-polis/rotator-cog/commit/2b672c719d8a85ddfc28d41087e93121560fbe9f))
+
 ## [1.7.1](https://github.com/mini-app-polis/rotator-cog/compare/v1.7.0...v1.7.1) (2026-10-25)
 
 
