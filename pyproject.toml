@@ -5,7 +5,9 @@ description = "Rotates the fleet's secrets and records each rotation. Holds the 
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "miniapppolis-common-utils>=6.26.0,<7",
     "pyyaml>=6.0,<7.0",
+    "sentry-sdk>=2.0.0,<3.0.0",
 ]
 
 [dependency-groups]
@@ -27,6 +29,11 @@ path = "src/rotator_cog/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/rotator_cog"]
+
+# The worker reads the inventory from inside its package: the deployed zip
+# is the installed wheel, and secrets/ is not in it otherwise.
+[tool.hatch.build.targets.wheel.force-include]
+"secrets/inventory.yaml" = "rotator_cog/inventory.yaml"
 
 [tool.ruff]
 line-length = 88
