@@ -1,3 +1,10 @@
+# [1.7.0](https://github.com/mini-app-polis/rotator-cog/compare/v1.6.0...v1.7.0) (2026-10-25)
+
+
+### Features
+
+* **sweep:** rotate due keys only when ROTATOR_SWEEP_ROTATE is true; report them otherwise ([b22bdc9](https://github.com/mini-app-polis/rotator-cog/commit/b22bdc97cf186042bec05394dd711d13dc9f1502))
+
 # [1.6.0](https://github.com/mini-app-polis/rotator-cog/compare/v1.5.0...v1.6.0) (2026-10-25)
 
 
