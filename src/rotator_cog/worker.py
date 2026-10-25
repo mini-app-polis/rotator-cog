@@ -84,6 +84,7 @@ from mini_app_polis.lambda_worker import (
 from mini_app_polis.pipeline_status import post_run_finding, run_report
 from mini_app_polis.sentry import init_sentry
 
+from . import aws_keys
 from . import doppler as doppler_mod
 from . import railway as railway_mod
 from . import sweep as sweep_mod
@@ -101,7 +102,7 @@ MACHINE_NAME = "rotator-cog"
 #: The kinds the worker rotates. The others are rotated with scripts/rotate.py:
 #: a generated secret's check runs under the doppler CLI, which the function
 #: does not have.
-WORKER_KINDS = frozenset({"machine-key"})
+WORKER_KINDS = frozenset({"machine-key", "aws-access-key"})
 
 #: Cloudflare blocks default library user agents.
 USER_AGENT = "mini-app-polis-rotator/1"
@@ -182,9 +183,19 @@ def validate(job: RotationRequest, inventory: Mapping[str, Any]) -> dict[str, An
         raise InvalidJob("also held in GitHub: rotate it with rotate.py")
     if entry.get("steps"):
         raise InvalidJob("needs a manual step: rotate it with rotate.py")
-    if ACCEPTING_SERVICE not in entry.get("redeploy", []):
+    if kind == "machine-key" and ACCEPTING_SERVICE not in entry.get("redeploy", []):
         raise InvalidJob(f"{ACCEPTING_SERVICE} is not in its redeploy list")
+    if kind == "aws-access-key" and not (entry.get("iam_user") and entry.get("id_var")):
+        raise InvalidJob("an AWS key entry needs iam_user and id_var")
     return dict(entry)
+
+
+#: Checks a new AWS key: (user, key id, secret) -> None, or why not.
+AwsVerifier = Callable[[str, str, str], str | None]
+
+
+def _iam() -> Any:
+    return importlib.import_module("boto3").client("iam")
 
 
 def machine_name(var: str) -> str:
@@ -349,6 +360,8 @@ def rotate(
             redeploy=railway_redeployer(),
             verify=machine_verifier(inventory),
             record=api_recorder(),
+            iam_factory=_iam,
+            aws_verify=aws_keys.sts_verifier(),
         )
 
 
@@ -366,6 +379,8 @@ def _rotate(
         doppler_mod.Doppler
     ),
     now: Callable[[], datetime] = _now,
+    iam_factory: Callable[[], Any] | None = None,
+    aws_verify: AwsVerifier | None = None,
 ) -> None:
     """Mint the new value, hand it over in Doppler, redeploy, verify and record.
 
@@ -374,6 +389,27 @@ def _rotate(
     NAME_PREVIOUS that nothing retires.
     """
     label = f"{job.name} in {job.config}"
+    if entry["kind"] == "aws-access-key":
+        if (
+            redeploy is None
+            or record is None
+            or iam_factory is None
+            or aws_verify is None
+        ):
+            report.issue("rotation not built yet", label)
+            return
+        _rotate_aws(
+            job,
+            entry,
+            doppler_factory(inventory["doppler_project"], job.config, token),
+            iam_factory(),
+            report=report,
+            redeploy=redeploy,
+            verify=aws_verify,
+            record=record,
+            now=now,
+        )
+        return
     if redeploy is None or verify is None or record is None:
         report.issue("rotation not built yet", label)
         return
@@ -431,6 +467,93 @@ def _rotate(
         report.issue("verification failed", label, detail=reason)
 
 
+def _rotate_aws(
+    job: RotationRequest,
+    entry: Mapping[str, Any],
+    store: doppler_mod.Doppler,
+    iam: Any,
+    *,
+    report: Any,
+    redeploy: Redeployer,
+    verify: AwsVerifier,
+    record: Recorder,
+    now: Callable[[], datetime],
+) -> None:
+    """Rotate one IAM user's access key.
+
+    The new key is created beside the old one and both of its parts go to
+    Doppler in one write; the entry's services are redeployed once Railway
+    shows them. A routine rotation deletes the old key only after the new
+    one has verified, and leaves it active if it did not. A compromised one
+    deactivates and deletes the old key as soon as the new one is stored.
+    """
+    label = f"{job.name} in {job.config}"
+    user, id_var = entry["iam_user"], entry["id_var"]
+    old_keys = aws_keys.existing(iam, user)
+    if len(old_keys) >= 2:
+        report.issue(
+            "the IAM user already has two access keys; a person must delete one",
+            f"{label} ({user})",
+            detail=aws_keys.describe(old_keys),
+        )
+        return
+    minted = now()
+    retired: datetime | None = None
+    key_id, secret = aws_keys.create(iam, user)
+
+    def event(reason: str | None) -> RotationEventCreate:
+        return RotationEventCreate(
+            name=job.name,
+            config=job.config,
+            kind="aws-access-key",
+            mode=job.mode,
+            actor=MACHINE_NAME,
+            minted=minted,
+            retired=retired,
+            verification="ok" if reason is None else "failed",
+            verification_reason=reason,
+            aws_key_last4=aws_keys.last4(key_id),
+        )
+
+    try:
+        try:
+            doppler_mod.write(store, job.name, {id_var: key_id, job.name: secret})
+        except Exception:
+            # Nothing holds the new key yet: take it back, so the user is not
+            # left at its two-key limit by a write that never landed.
+            aws_keys.delete(iam, user, key_id)
+            raise
+        if job.mode == "compromised":
+            for old in old_keys:
+                aws_keys.deactivate(iam, user, old["AccessKeyId"])
+                aws_keys.delete(iam, user, old["AccessKeyId"])
+            retired = now()
+        redeploy(
+            job.config,
+            {
+                service: {id_var: key_id, job.name: secret}
+                for service in entry["redeploy"]
+            },
+        )
+        reason = verify(user, key_id, secret)
+        if reason is None and job.mode == "routine":
+            for old in old_keys:
+                aws_keys.delete(iam, user, old["AccessKeyId"])
+            retired = now()
+    except Exception as exc:
+        record(event(_reason(exc)))
+        raise
+    finally:
+        del secret
+    record(event(reason))
+    if reason is None:
+        report.updated("rotated", f"{label} (key …{aws_keys.last4(key_id)})")
+    else:
+        report.issue(
+            "verification failed; the old key is left active", label, detail=reason
+        )
+
+
 def run_sweep(
     config: str,
     *,
@@ -445,6 +568,8 @@ def run_sweep(
     verifier_factory: Callable[[Mapping[str, Any]], Verifier] = machine_verifier,
     recorder_factory: Callable[[], Recorder] = api_recorder,
     now: Callable[[], datetime] = _now,
+    iam_factory: Callable[[], Any] = _iam,
+    aws_verify: AwsVerifier | None = None,
 ) -> None:
     """Sweep one config: retire, rotate the most overdue key, report drift."""
     with run_report(
@@ -455,6 +580,7 @@ def run_sweep(
         token = token_reader(config)
         store = doppler_factory(inventory["doppler_project"], config, token)
         redeploy, record = redeploy_factory(), recorder_factory()
+        aws_verify = aws_verify or aws_keys.sts_verifier()
         latest = {e.name: e for e in api.latest(config)}
         at = now()
 
@@ -499,9 +625,12 @@ def run_sweep(
             except InvalidJob:
                 continue
             eligible.append(name)
-        cadence = int(inventory["cadence_days"]["machine-key"])
+        cadences = {
+            n: int(inventory["cadence_days"][inventory["secrets"][n]["kind"]])
+            for n in eligible
+        }
         overdue, failed = sweep_mod.due(
-            eligible, latest, cadence, actor=MACHINE_NAME, now=at
+            eligible, latest, cadences, actor=MACHINE_NAME, now=at
         )
         for name in failed:
             report.issue("last rotation failed; needs a person", f"{name} in {config}")
@@ -519,6 +648,8 @@ def run_sweep(
                 record=record,
                 doppler_factory=doppler_factory,
                 now=now,
+                iam_factory=iam_factory,
+                aws_verify=aws_verify,
             )
 
         # 3. Drift between Doppler and the inventory.
