@@ -8,10 +8,20 @@ mini-app-polis/infra. Two kinds of message arrive on it:
 
 A job asks for one secret to be rotated in one Doppler config. It is checked
 against the inventory packaged with the function (secrets/inventory.yaml):
-the name must be listed, its kind must be one the worker rotates, and the
-config must be one the secret is held in. A job that fails the check is
-reported and acknowledged: it is the producer's mistake, and sending it
-again would fail the same way.
+the name must be listed, its kind must be one the worker rotates, the config
+must be one the secret is held in, and the secret must live in Doppler alone
+(an entry also held in GitHub, or with a manual step, is rotated with
+scripts/rotate.py). A job that fails the check is reported and acknowledged:
+it is the producer's mistake, and sending it again would fail the same way.
+
+**Two phases for a routine rotation.** Callers on Lambda read Parameter
+Store on every invocation, so they would present a new key within moments of
+Doppler's sync, while the API learns it only when it is redeployed. So the
+new value first goes to NAME_PREVIOUS and the API is redeployed, accepting
+both keys; then NAME takes the new value and NAME_PREVIOUS the old one, the
+callers switch, and the API is redeployed again. A compromised rotation is
+one write: NAME takes the new value and NAME_PREVIOUS is deleted, and the
+401s until the redeploy are the price.
 
 The worker writes new values with a Doppler token of its own, one per
 config, read from the Parameter Store path its environment names
@@ -24,14 +34,15 @@ rotated, which needs a person, so the queue delivers each message once
 named in ``batchItemFailures`` and lands in the dead-letter queue, whose
 alarm says so.
 
-Minting, writing and verifying are not built yet: a valid job is reported as
-not rotated, and a sweep is acknowledged and logged.
+Redeploying and verifying are not built yet, so a valid job is reported as
+not rotated and nothing is written; a sweep is acknowledged and logged.
 """
 
 from __future__ import annotations
 
 import importlib
 import os
+import secrets as pysecrets
 from collections.abc import Callable, Mapping
 from importlib import resources
 from pathlib import Path
@@ -55,6 +66,7 @@ from mini_app_polis.lambda_worker import (
 from mini_app_polis.pipeline_status import post_run_finding, run_report
 from mini_app_polis.sentry import init_sentry
 
+from . import doppler as doppler_mod
 from ._version import __version__
 
 log = logger_mod.get_logger()
@@ -83,6 +95,12 @@ _REPO_INVENTORY = Path(__file__).resolve().parents[2] / "secrets" / "inventory.y
 init_sentry(REPO)
 
 
+#: Redeploys the entry's services in the config's environment; raises on failure.
+Redeployer = Callable[[Mapping[str, Any], str], None]
+#: Whether the new value works: (name, entry, config, value) -> ok.
+Verifier = Callable[[str, Mapping[str, Any], str, str], bool]
+
+
 class InvalidJob(Exception):
     """The job asks for something the worker does not rotate."""
 
@@ -109,7 +127,20 @@ def validate(job: RotationRequest, inventory: Mapping[str, Any]) -> dict[str, An
         raise InvalidJob(f"kind {kind} is not rotated by the worker")
     if job.config not in entry.get("configs", ["prd"]):
         raise InvalidJob(f"not held in {job.config}")
+    if entry.get("github"):
+        raise InvalidJob("also held in GitHub: rotate it with rotate.py")
+    if entry.get("steps"):
+        raise InvalidJob("needs a manual step: rotate it with rotate.py")
     return dict(entry)
+
+
+def mint(inventory: Mapping[str, Any], config: str) -> str:
+    """A new value, as rotate.py mints one: the config's key prefix, then random.
+
+    No dots in either part: a dotless credential routes as a machine key.
+    """
+    prefix = (inventory.get("key_prefix") or {}).get(config, "")
+    return f"{prefix}{pysecrets.token_urlsafe(32)}"
 
 
 def doppler_token(config: str, *, client: Any | None = None) -> str:
@@ -145,20 +176,59 @@ def rotate(
     """Check one job and rotate its secret. Never redelivered."""
     label = f"{job.name} in {job.config}"
     with run_report(FLOW_NAME, repo=REPO, run_id=run_id, version=__version__) as report:
+        inventory = inventory_loader()
         try:
-            entry = validate(job, inventory_loader())
+            entry = validate(job, inventory)
         except InvalidJob as exc:
             report.issue("rotation job rejected", label, detail=str(exc))
             return
         token = token_reader(job.config)
-        _rotate(job, entry, token, report=report)
+        _rotate(job, entry, token, inventory=inventory, report=report)
 
 
 def _rotate(
-    job: RotationRequest, entry: Mapping[str, Any], token: str, *, report: Any
+    job: RotationRequest,
+    entry: Mapping[str, Any],
+    token: str,
+    *,
+    inventory: Mapping[str, Any],
+    report: Any,
+    redeploy: Redeployer | None = None,
+    verify: Verifier | None = None,
+    doppler_factory: Callable[[str, str, str], doppler_mod.Doppler] = (
+        doppler_mod.Doppler
+    ),
 ) -> None:
-    """Mint, write, verify and record. Not built yet: reported, not rotated."""
-    report.issue("rotation not built yet", f"{job.name} in {job.config}")
+    """Mint the new value, hand it over in Doppler, redeploy and verify.
+
+    Nothing is written unless both redeploy and verify are there: a
+    handover stopped between its phases would leave a live key in
+    NAME_PREVIOUS that nothing retires.
+    """
+    label = f"{job.name} in {job.config}"
+    if redeploy is None or verify is None:
+        report.issue("rotation not built yet", label)
+        return
+    store = doppler_factory(inventory["doppler_project"], job.config, token)
+    old = store.get(job.name)
+    if old is None:
+        report.issue("not in Doppler", label)
+        return
+    new = mint(inventory, job.config)
+    if job.mode == "compromised":
+        doppler_mod.replace(store, job.name, new)
+    else:
+        doppler_mod.stage(store, job.name, new)
+        redeploy(entry, job.config)
+        doppler_mod.promote(store, job.name, new, old)
+    del old
+    redeploy(entry, job.config)
+    ok = verify(job.name, entry, job.config, new)
+    del new
+    if ok:
+        report.updated("rotated", label)
+    else:
+        report.issue("verification failed", label)
 
 
 def process_message(body: str, *, run_id: str, **kwargs: Any) -> None:

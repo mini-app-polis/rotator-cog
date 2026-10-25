@@ -20,10 +20,13 @@ in Doppler.
   (declared in mini-app-polis/infra). It takes `rotation.job` and
   `rotation.sweep` messages, checks a job against the inventory packaged
   with it (machine-key and generated kinds only, in a config the secret is
-  held in), and reads that config's Doppler token from Parameter Store.
-  Minting, writing and verifying are not built yet, so a valid job is
-  reported as not rotated and a sweep is acknowledged. CI deploys it after
-  each release.
+  held in, and only secrets that live in Doppler alone), and reads that
+  config's Doppler token from Parameter Store. A routine rotation hands the
+  new value over in two phases (`NAME_PREVIOUS` first, so the API accepts
+  it before callers switch); a compromised one replaces it at once.
+  Redeploying and verifying are not built yet, so a valid job writes
+  nothing and is reported as not rotated, and a sweep is acknowledged. CI
+  deploys it after each release.
 
 These came here from mini-app-polis/infra with their history.
 
