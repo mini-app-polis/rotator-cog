@@ -297,10 +297,12 @@ def _secure_parameter(var: str, *, client: Any | None = None) -> str:
         response = client.get_parameter(Name=name, WithDecryption=True)
     except Exception as exc:  # noqa: BLE001 — named by its type alone
         raise TokenUnavailable(f"could not read {name}: {type(exc).__name__}") from None
-    value = (response.get("Parameter") or {}).get("Value")
+    # A token piped in from a CLI arrives with its trailing newline, which
+    # no header may carry.
+    value = str((response.get("Parameter") or {}).get("Value") or "").strip()
     if not value:
         raise TokenUnavailable(f"{name} has no value")
-    return str(value)
+    return value
 
 
 def railway_redeployer(

@@ -660,3 +660,10 @@ def test_the_handler_names_everything_when_settings_cannot_load(
         {"itemIdentifier": "a"},
         {"itemIdentifier": "b"},
     ]
+
+
+def test_a_token_put_with_a_trailing_newline_is_read_without_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DOPPLER_TOKEN_PRD_PARAMETER", "/rotator/DOPPLER_TOKEN_PRD")
+    assert worker.doppler_token("prd", client=FakeSsm(value=TOKEN + "\n")) == TOKEN
