@@ -64,14 +64,37 @@ There are two modes:
 - **`--compromised`** kills the old credential as soon as the new one is
   stored, and accepts the outage.
 
-### Known limit
+### Rotation by the worker
 
-The API holds one key per machine and reads it at boot. A machine-key
-rotation therefore always has a short 401 window: it opens when Doppler
-syncs and closes when `api-kaianolevine-com` redeploys. The Lambda cog
-picks up its new key on its next invocation. Zero-downtime rotation needs
-the API to accept `<NAME>_API_KEY_PREVIOUS` during an overlap. That is
-not built yet.
+The rotator's Lambda worker rotates machine keys that live in Doppler alone
+(the rest stay on `rotate.py`), with no 401 window: the API accepts a
+machine's `<NAME>_API_KEY_PREVIOUS` beside its current key. A routine
+rotation puts the new key in the previous slot and redeploys the API, then
+makes it the current key with the old one in the previous slot and
+redeploys again, so callers switch while both are accepted. Ask for one
+with `POST /v1/secrets/rotations` on the production API (only production
+has the rotator's queue), with `config` naming the Doppler config.
+
+A daily sweep per config (14:00 UTC) does the rest:
+
+- **Retires previous keys.** Once nothing has used a previous key for 24
+  hours (the API's audit trail records which key proved each request), it
+  is deleted from Doppler and the API redeployed. Because the sweep runs
+  once a day, a previous key is retired 24 to 48 hours after its last use.
+  In dev the rotator cannot read the development API's audit trail, so a
+  previous key is retired a day after its rotation. At seven days a key
+  still in use is retired anyway, and the run report names the machine
+  still on it.
+- **Rotates the most overdue key**, one per config per day, on a day that
+  retired nothing. A key mid-handover is not rotated again, and one whose
+  last rotation failed is reported each day rather than retried.
+- **Reports drift**, as `rotate.py check` does, in the run report.
+
+In development, a service reads only the shared variables referenced on
+it in the dashboard, so `api-kaianolevine-com` there needs each
+`<NAME>_API_KEY_PREVIOUS` referenced (`${{shared.NAME_API_KEY_PREVIOUS}}`)
+before the worker can rotate that key in dev. Production's references are
+in the service's `.railway/railway.ts`.
 
 ### Importing the legacy record
 

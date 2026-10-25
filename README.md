@@ -27,7 +27,9 @@ in Doppler.
   value, then redeploys the services that read it with that config's
   Railway project token, reusing their last image. It then checks the key
   with `GET /v1/identity/whoami` at the config's API and records the
-  rotation as ok or failed. A sweep is acknowledged and logged. CI deploys
+  rotation as ok or failed. A daily sweep per config retires previous keys
+  nothing uses any more, rotates the most overdue key and reports drift
+  (`src/rotator_cog/sweep.py`, and the runbook in `secrets/`). CI deploys
   the worker after each release.
 
 These came here from mini-app-polis/infra with their history.

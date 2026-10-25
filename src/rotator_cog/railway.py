@@ -149,7 +149,9 @@ class Railway:
         )["variables"]
         try:
             for name, want in expected.items():
-                have = held.get(name)
+                # A referenced variable Doppler does not hold renders empty,
+                # and an empty value is how the services read "not set".
+                have = held.get(name) or None
                 if (have is None) != (want is None):
                     return False
                 if have is not None and digest(have) != want:

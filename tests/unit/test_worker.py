@@ -579,11 +579,16 @@ def test_a_job_message_is_rotated(monkeypatch: pytest.MonkeyPatch) -> None:
     assert seen == [(_job(), "m-1")]
 
 
-def test_a_sweep_is_acknowledged_and_rotates_nothing(
+def test_a_sweep_message_runs_the_sweep_of_its_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    seen: list[tuple[str, str]] = []
     monkeypatch.setattr(worker, "rotate", lambda *a, **kw: pytest.fail("rotated"))
+    monkeypatch.setattr(
+        worker, "run_sweep", lambda config, *, run_id: seen.append((config, run_id))
+    )
     worker.process_message(_body("rotation.sweep", config="prd"), run_id="m-1")
+    assert seen == [("prd", "m-1")]
 
 
 @pytest.mark.parametrize(
@@ -603,6 +608,7 @@ def test_unreadable_messages_are_refused(body: str) -> None:
 
 def test_the_handler_acknowledges_a_sweep(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(worker, "load_secrets", lambda refresh: [])
+    monkeypatch.setattr(worker, "run_sweep", lambda config, *, run_id: None)
     event = {
         "Records": [
             {

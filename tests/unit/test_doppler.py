@@ -26,6 +26,8 @@ class FakeDoppler:
         self.requests.append(request)
         if self.status != 200:
             return httpx.Response(self.status, json={"messages": [VALUE]})
+        if request.method == "GET" and request.url.path.endswith("/names"):
+            return httpx.Response(200, json={"names": sorted(self.secrets)})
         if request.method == "GET":
             name = request.url.params["name"]
             if name not in self.secrets:
@@ -134,3 +136,16 @@ def test_an_unexpected_answer_is_an_error() -> None:
     )
     with pytest.raises(doppler.DopplerError, match="unexpected response"):
         client.get("KEY")
+
+
+def test_names_lists_the_config_without_reading_values() -> None:
+    fake = FakeDoppler({"KEY": VALUE, "OTHER": "x"})
+    assert fake.client().names() == {"KEY", "OTHER"}
+    assert fake.requests[0].url.path == "/v3/configs/config/secrets/names"
+
+
+def test_retire_deletes_every_previous_slot_in_one_write() -> None:
+    fake = FakeDoppler({"A": "a", "A_PREVIOUS": "x", "B": "b", "B_PREVIOUS": "y"})
+    doppler.retire(fake.client(), ["A", "B"])
+    assert fake.secrets == {"A": "a", "B": "b"}
+    assert len(fake.writes()) == 1

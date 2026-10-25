@@ -46,7 +46,10 @@ config's API, must name the machine. The rotation is recorded with the API
 (``POST /v1/secrets/rotation-events``) as ok or failed, and any failure after
 the value is minted (a write, a redeploy, the check) is recorded as failed
 and fails the job. The run report goes to the runs channel, and a failure's
-to errors as well. A sweep is acknowledged and logged.
+to errors as well.
+
+A sweep retires previous keys, rotates the most overdue key and reports
+drift, for one config (sweep.py).
 """
 
 from __future__ import annotations
@@ -83,12 +86,14 @@ from mini_app_polis.sentry import init_sentry
 
 from . import doppler as doppler_mod
 from . import railway as railway_mod
+from . import sweep as sweep_mod
 from ._version import __version__
 
 log = logger_mod.get_logger()
 
 REPO = "rotator-cog"
 FLOW_NAME = "rotate-secret"
+SWEEP_FLOW_NAME = "rotation-sweep"
 
 #: This cog's name to the API, which picks its key; also the actor recorded.
 MACHINE_NAME = "rotator-cog"
@@ -426,15 +431,110 @@ def _rotate(
         report.issue("verification failed", label, detail=reason)
 
 
+def run_sweep(
+    config: str,
+    *,
+    run_id: str,
+    inventory_loader: Callable[[], Mapping[str, Any]] = load_inventory,
+    token_reader: Callable[[str], str] = doppler_token,
+    api_factory: Callable[[str], sweep_mod.SweepApi] = sweep_mod.api,
+    doppler_factory: Callable[[str, str, str], doppler_mod.Doppler] = (
+        doppler_mod.Doppler
+    ),
+    redeploy_factory: Callable[[], Redeployer] = railway_redeployer,
+    verifier_factory: Callable[[Mapping[str, Any]], Verifier] = machine_verifier,
+    recorder_factory: Callable[[], Recorder] = api_recorder,
+    now: Callable[[], datetime] = _now,
+) -> None:
+    """Sweep one config: retire, rotate the most overdue key, report drift."""
+    with run_report(
+        SWEEP_FLOW_NAME, repo=REPO, run_id=run_id, version=__version__
+    ) as report:
+        inventory = inventory_loader()
+        api = api_factory(MACHINE_NAME)
+        token = token_reader(config)
+        store = doppler_factory(inventory["doppler_project"], config, token)
+        redeploy, record = redeploy_factory(), recorder_factory()
+        latest = {e.name: e for e in api.latest(config)}
+        at = now()
+
+        # 1. Retire previous keys that nothing uses any more.
+        ready = sweep_mod.retirements(
+            latest.values(),
+            config,
+            actor=MACHINE_NAME,
+            machine_of=machine_name,
+            last_use=api.last_previous_use,
+            now=at,
+        )
+        if ready:
+            names = [r.event.name for r in ready]
+            doppler_mod.retire(store, names)
+            redeploy(
+                config,
+                {
+                    ACCEPTING_SERVICE: {
+                        doppler_mod.previous_name(n): None for n in names
+                    }
+                },
+            )
+            retired_at = now()
+            for r in ready:
+                record(sweep_mod.retired_event(r.event, retired_at))
+                report.removed("previous key", f"{r.event.name} in {config}")
+                if r.forced:
+                    report.issue(
+                        "previous key retired while still in use",
+                        r.machine,
+                        detail=f"last used {r.last_used:%Y-%m-%d %H:%M} UTC"
+                        if r.last_used
+                        else None,
+                    )
+
+        # 2. Rotate the most overdue key, on a day that retired nothing.
+        eligible = []
+        for name in inventory["secrets"]:
+            try:
+                validate(sweep_mod.request_for(name, config), inventory)
+            except InvalidJob:
+                continue
+            eligible.append(name)
+        cadence = int(inventory["cadence_days"]["machine-key"])
+        overdue, failed = sweep_mod.due(
+            eligible, latest, cadence, actor=MACHINE_NAME, now=at
+        )
+        for name in failed:
+            report.issue("last rotation failed; needs a person", f"{name} in {config}")
+        report.count("due", len(overdue))
+        if overdue and not ready:
+            job = sweep_mod.request_for(overdue[0], config)
+            _rotate(
+                job,
+                validate(job, inventory),
+                token,
+                inventory=inventory,
+                report=report,
+                redeploy=redeploy,
+                verify=verifier_factory(inventory),
+                record=record,
+                doppler_factory=doppler_factory,
+                now=now,
+            )
+
+        # 3. Drift between Doppler and the inventory.
+        unknown, missing = sweep_mod.drift(store.names(), inventory, config)
+        for name in unknown:
+            report.issue("in Doppler, not in the inventory", f"{name} in {config}")
+        for name in missing:
+            report.issue("in the inventory, not in Doppler", f"{name} in {config}")
+
+
 def process_message(body: str, *, run_id: str, **kwargs: Any) -> None:
     """Handle one message."""
     message = parse_message(body, RotationJobMessage, RotationSweepMessage)
     if isinstance(message, RotationSweepMessage):
-        log.warning(
-            "worker: run %s: the sweep of %s is not built yet; acknowledged",
-            run_id,
-            message.payload.config,
-        )
+        log.info("worker: run %s sweeps %s", run_id, message.payload.config)
+        run_sweep(message.payload.config, run_id=run_id)
         return
     job = message.payload
     log.info("worker: run %s rotates %s in %s", run_id, job.name, job.config)
