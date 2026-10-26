@@ -102,6 +102,14 @@ A daily sweep per config (14:00 UTC) does the rest:
   rotation the secret follows, so it gets one task until it is rotated. A
   secret held outside Doppler is asked for by the prd sweep.
 - **Reports drift**, as `rotate.py check` does, in the run report.
+- **Flags changes no rotation explains.** Doppler's secrets.update webhook
+  tells the API which names changed (never values). Once a change is a day
+  old, the sweep checks it against the record: a change to a secret is
+  explained by a rotation of it minted from two hours before to five
+  minutes after, and a change to its `_PREVIOUS` slot, key id or copies by
+  its rotation in the eight days before. Anything else was changed outside
+  this process: it is in the run report, and, with `ROTATOR_SWEEP_TASKS`
+  on, one task asks you to record it with `rotate.py` or revert it.
 
 In development, a service reads only the shared variables referenced on
 it in the dashboard, so `api-kaianolevine-com` there needs each

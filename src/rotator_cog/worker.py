@@ -722,7 +722,7 @@ def run_sweep(
     aws_verify: AwsVerifier | None = None,
 ) -> None:
     """Sweep one config: retire, rotate the most overdue key, ask for manual
-    rotations, report drift."""
+    rotations, report drift and changes no rotation explains."""
     with run_report(
         SWEEP_FLOW_NAME, repo=REPO, run_id=run_id, version=__version__
     ) as report:
@@ -847,6 +847,31 @@ def run_sweep(
             report.issue("in Doppler, not in the inventory", f"{name} in {config}")
         for name in missing:
             report.issue("in the inventory, not in Doppler", f"{name} in {config}")
+
+        # 5. Changes Doppler reported that no rotation explains.
+        since, until = sweep_mod.change_window(at)
+        try:
+            changes = api.changes(config, since=since, until=until)
+            events = api.events(config)
+        except Exception as exc:  # noqa: BLE001 — the rest of the sweep still counts
+            report.issue("secret changes not read", config, detail=str(exc)[:500])
+        else:
+            report.count("changes", len(changes))
+            for change in sweep_mod.unexplained(changes, events, inventory):
+                label = f"{change.name} in {config}"
+                report.issue("changed outside a rotation", label)
+                if not asking:
+                    report.note(
+                        f"no task asked for the change: {SWEEP_TASKS_VAR} is off",
+                        label,
+                    )
+                    continue
+                try:
+                    api.request_task(sweep_mod.change_task_for(change, config))
+                except Exception as exc:  # noqa: BLE001 — one refusal must not stop the rest
+                    report.issue(
+                        "change task not asked for", label, detail=str(exc)[:500]
+                    )
 
 
 def process_message(body: str, *, run_id: str, **kwargs: Any) -> None:
