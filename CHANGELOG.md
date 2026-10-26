@@ -1,3 +1,15 @@
+# [1.9.0](https://github.com/mini-app-polis/rotator-cog/compare/v1.8.3...v1.9.0) (2026-10-26)
+
+
+### Bug Fixes
+
+* **deps:** bump miniapppolis-common-utils to 6.29.0 ([0bca232](https://github.com/mini-app-polis/rotator-cog/commit/0bca2328c4ac5dd789b8d901df02997d636e6c93))
+
+
+### Features
+
+* **sweep:** ask for one task per due manual secret, naming the rotate.py command ([3bd1216](https://github.com/mini-app-polis/rotator-cog/commit/3bd12166fef5c29ed39a2c3ad183913cb42a636b))
+
 ## [1.8.3](https://github.com/mini-app-polis/rotator-cog/compare/v1.8.2...v1.8.3) (2026-10-26)
 
 
