@@ -39,7 +39,6 @@ KINDS = ("machine-key", "generated", "aws-access-key", "manual")
 #: bounds the reason, and nothing a check printed belongs in it.
 CHECK_FAILED = "The check failed when this was rotated."
 RECHECK_FAILED = "A later re-check failed."
-NO_CHECK = "No check ran when this was rotated by hand."
 
 
 def now() -> str:
@@ -50,15 +49,17 @@ def now() -> str:
 def verification(verified: bool | None, *, recheck: bool = False) -> dict[str, Any]:
     """The verification fields for a check's result.
 
-    Only ``ok`` is a successful rotation, so a rotation nothing checked is
-    ``failed`` with a reason that says no check ran, never ``ok``.
+    ``ok``: the check passed. ``failed``: it did not, and the reason says
+    so. ``unchecked``: written through rotate.py, and the secret has no
+    automatic check. Both ``ok`` and ``unchecked`` count as rotated: a broken
+    value shows up in the failures of whatever uses it.
     """
     if verified is True:
         return {"verification": "ok", "verification_reason": None}
     if verified is False:
         reason = RECHECK_FAILED if recheck else CHECK_FAILED
         return {"verification": "failed", "verification_reason": reason}
-    return {"verification": "failed", "verification_reason": NO_CHECK}
+    return {"verification": "unchecked", "verification_reason": None}
 
 
 def event(

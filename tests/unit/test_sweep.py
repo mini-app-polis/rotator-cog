@@ -15,6 +15,8 @@ from rotator_cog import doppler, sweep, worker
 NOW = dt.datetime(2026, 10, 25, 14, 0, tzinfo=dt.UTC)
 TOKEN = "dp.st.token-for-tests"
 ROTATOR = "rotator-cog"
+#: rotate.py records a rotation under the person who ran it.
+PERSON = "owner@example.com"
 
 
 def _event(
@@ -38,7 +40,7 @@ def _event(
         retired=retired,
         verification=verification,  # type: ignore[arg-type]
         verification_reason=None
-        if verification == "ok"
+        if verification != "failed"
         else "whoami answered HTTP 401",
         recorded_at=NOW - age,
     )
@@ -147,6 +149,33 @@ def test_a_failed_rotation_is_reported_not_retried() -> None:
     ) == (
         [],
         ["A_API_KEY"],
+    )
+
+
+def test_an_unchecked_rotation_counts_as_rotated() -> None:
+    """Not reported as failed, and due again only once its cadence passes."""
+    recent = {
+        "A_API_KEY": _event(
+            "A_API_KEY",
+            age=dt.timedelta(days=10),
+            actor=PERSON,
+            verification="unchecked",
+        )
+    }
+    assert sweep.due(
+        ["A_API_KEY"], recent, {"A_API_KEY": 90}, actor=ROTATOR, now=NOW
+    ) == ([], [])
+    old = {
+        "A_API_KEY": _event(
+            "A_API_KEY",
+            age=dt.timedelta(days=100),
+            actor=PERSON,
+            verification="unchecked",
+        )
+    }
+    assert sweep.due(["A_API_KEY"], old, {"A_API_KEY": 90}, actor=ROTATOR, now=NOW) == (
+        ["A_API_KEY"],
+        [],
     )
 
 

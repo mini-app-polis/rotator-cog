@@ -7,7 +7,7 @@ import datetime as dt
 from rotator_cog import events
 
 
-def test_verification_is_ok_only_when_a_check_passed() -> None:
+def test_verification_follows_the_check_and_is_unchecked_without_one() -> None:
     assert events.verification(True) == {
         "verification": "ok",
         "verification_reason": None,
@@ -18,8 +18,8 @@ def test_verification_is_ok_only_when_a_check_passed() -> None:
         == events.RECHECK_FAILED
     )
     assert events.verification(None) == {
-        "verification": "failed",
-        "verification_reason": events.NO_CHECK,
+        "verification": "unchecked",
+        "verification_reason": None,
     }
 
 

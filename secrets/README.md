@@ -50,9 +50,10 @@ Each run:
    console-issued values the script prints the step and asks for
    confirmation.
 5. **Record.** One event per secret goes to the API. A rotation is
-   `ok` only if its check passed; one with no automatic check is recorded
-   `failed`, saying no check ran. `verify` re-runs the checks later and
-   rewrites the latest event's result.
+   `ok` if its check passed and `failed` if it did not. One with no
+   automatic check is recorded `unchecked`: it counts as rotated, and a
+   broken value shows up in the failures of whatever uses it. `verify`
+   re-runs the checks later and rewrites the latest event's result.
 
 There are two modes:
 

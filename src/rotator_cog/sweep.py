@@ -143,7 +143,10 @@ def due(
     actor: str,
     now: datetime,
 ) -> tuple[list[str], list[str]]:
-    """(Due names, most overdue first; names whose latest rotation failed)."""
+    """(Due names, most overdue first; names whose latest rotation failed).
+
+    A latest rotation that is ``unchecked`` counts as rotated, as ``ok`` does.
+    """
     ready: list[tuple[datetime, str]] = []
     failed: list[str] = []
     for name in names:
@@ -151,7 +154,7 @@ def due(
         if last is None:
             ready.append((datetime.min.replace(tzinfo=now.tzinfo), name))
             continue
-        if last.verification != "ok":
+        if last.verification == "failed":
             failed.append(name)
             continue
         if last.actor == actor and last.mode == "routine" and last.retired is None:
