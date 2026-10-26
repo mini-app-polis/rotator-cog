@@ -1,3 +1,10 @@
+## [1.8.1](https://github.com/mini-app-polis/rotator-cog/compare/v1.8.0...v1.8.1) (2026-10-26)
+
+
+### Bug Fixes
+
+* **deps:** bump miniapppolis-common-utils to 6.27.0 ([3bd7bfa](https://github.com/mini-app-polis/rotator-cog/commit/3bd7bfa845c68e083dcf82d1944c6d7bccba39d8))
+
 # [1.8.0](https://github.com/mini-app-polis/rotator-cog/compare/v1.7.2...v1.8.0) (2026-10-25)
 
 
