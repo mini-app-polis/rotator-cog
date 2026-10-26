@@ -12,9 +12,6 @@ environment. GitHub Actions secrets hold a few values of their own.
   per rotation of a secret in a Doppler config, at
   `/v1/secrets/rotation-events`. `scripts/rotate.py` writes it under your
   own identity and reads it back to say what is due.
-- `rotations.jsonl`: the record from before the API kept one. Nothing
-  writes to it. `rotate.py import-ledger` seeds the API from it, and it
-  stays until that import has run against production.
 - `../scripts/rotate.py`: does the rotation.
 
 ## Using it
@@ -29,8 +26,8 @@ uv run scripts/rotate.py rotate --kind machine-key --reason "routine" --dry-run
 Prerequisites on the Mac: `doppler` (logged in), `aws` (profile
 `miniapppolis`), `gh` (logged in with `admin:org` for org secrets), `curl`.
 
-Reading or writing the record (`list`, `rotate`, `verify`, `pg-roles`,
-`import-ledger`) asks for a Clerk session token at a hidden prompt: the API
+Reading or writing the record (`list`, `rotate`, `verify`, `pg-roles`) asks
+for a Clerk session token at a hidden prompt: the API
 records the rotation as you, and a session is how a person signs in to it.
 On a page signed in to the wcs Clerk tenant, run
 `await Clerk.session.getToken()` in the browser console and paste the
@@ -107,17 +104,6 @@ variable it would wait for, is reported as "not ready to rotate; nothing
 was written", naming the reference to add. A reference to a shared
 variable Doppler does not hold yet is fine; it renders empty until the
 first rotation fills it.
-
-### Importing the legacy record
-
-`uv run scripts/rotate.py import-ledger --dry-run` prints what the import
-would send. Without `--dry-run` it sends it, then reads the latest event
-per secret and config back and checks each imported one is there. It sends
-only the latest rotation per secret and config, prd and dev: a re-check row
-decides that rotation's result, and rows with no Doppler config, rows for
-database URL variables (`postgres-role`) and names no longer in the
-inventory are left out, each counted. Events are keyed on secret, config
-and when the value was minted, so running it again adds nothing.
 
 ## Adding a secret
 

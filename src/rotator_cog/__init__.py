@@ -2,8 +2,8 @@
 
 The inventory lives in ``secrets/`` and ``scripts/rotate.py`` does the
 rotation. The API keeps the record of rotations: ``api`` reads and writes
-it, ``events`` builds what is written, and ``legacy`` seeds it from the
-ledger kept before the API did. ``worker`` is the Lambda entrypoint.
+it, ``events`` builds what is written, and ``entries`` reads an inventory
+entry for one Doppler config. ``worker`` is the Lambda entrypoint.
 """
 
 import os

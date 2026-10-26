@@ -9,7 +9,8 @@ from rotator_cog import doppler, worker
 
 def _seed(world: World) -> tuple[str, dict]:
     name = eligible_machine_key(world.inventory)
-    entry = world.inventory["secrets"][name]
+    # The entry as the worker sees it in prd: its redeploy list resolved.
+    entry = worker.validate(worker.sweep_mod.request_for(name, "prd"), world.inventory)
     world.secrets = {name: "old-key"}
     world.services = list(entry["redeploy"])
     return name, entry

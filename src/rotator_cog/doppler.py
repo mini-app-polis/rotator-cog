@@ -23,6 +23,8 @@ from typing import Any
 import httpx
 from pydantic import BaseModel, Field, ValidationError
 
+from .entries import previous_name
+
 BASE_URL = "https://api.doppler.com"
 TIMEOUT_SECONDS = 15.0
 
@@ -31,9 +33,6 @@ ATTEMPTS = 3
 RETRY_WAIT_SECONDS = 2.0
 #: Answers worth asking again: Doppler was busy or briefly down.
 RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
-
-#: The slot the API also accepts a key from while callers move to the new one.
-PREVIOUS_SUFFIX = "_PREVIOUS"
 
 
 class DopplerError(RuntimeError):
@@ -56,11 +55,6 @@ class _Names(BaseModel):
     """GET /v3/configs/config/secrets/names."""
 
     names: list[str] = Field(..., description="Every secret name in the config.")
-
-
-def previous_name(name: str) -> str:
-    """The slot that holds ``name``'s outgoing value during a handover."""
-    return f"{name}{PREVIOUS_SUFFIX}"
 
 
 class Doppler:

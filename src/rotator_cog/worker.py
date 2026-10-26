@@ -101,7 +101,7 @@ from mini_app_polis.pipeline_status import post_run_finding, run_report
 from mini_app_polis.sentry import init_sentry
 from pydantic import BaseModel, Field, ValidationError
 
-from . import aws_keys
+from . import aws_keys, entries
 from . import doppler as doppler_mod
 from . import railway as railway_mod
 from . import sweep as sweep_mod
@@ -205,7 +205,10 @@ def load_inventory() -> dict[str, Any]:
 
 
 def validate(job: RotationRequest, inventory: Mapping[str, Any]) -> dict[str, Any]:
-    """The job's inventory entry. Raises InvalidJob when the worker cannot rotate it."""
+    """The job's inventory entry, its redeploy list resolved for the job's config.
+
+    Raises InvalidJob when the worker cannot rotate it.
+    """
     entry = (inventory.get("secrets") or {}).get(job.name)
     if entry is None:
         raise InvalidJob("not in the inventory")
@@ -218,11 +221,12 @@ def validate(job: RotationRequest, inventory: Mapping[str, Any]) -> dict[str, An
         raise InvalidJob("also held in GitHub: rotate it with rotate.py")
     if entry.get("steps"):
         raise InvalidJob("needs a manual step: rotate it with rotate.py")
-    if kind == "machine-key" and ACCEPTING_SERVICE not in entry.get("redeploy", []):
+    resolved = entries.for_config(entry, job.config)
+    if kind == "machine-key" and ACCEPTING_SERVICE not in resolved["redeploy"]:
         raise InvalidJob(f"{ACCEPTING_SERVICE} is not in its redeploy list")
     if kind == "aws-access-key" and not (entry.get("iam_user") and entry.get("id_var")):
         raise InvalidJob("an AWS key entry needs iam_user and id_var")
-    return dict(entry)
+    return resolved
 
 
 #: Checks a new AWS key: (user, key id, secret) -> None, or why not.

@@ -9,14 +9,11 @@
     uv run scripts/rotate.py check [--config prd]
     uv run scripts/rotate.py rotate NAME [NAME ...] --reason TEXT [--compromised] [--config prd] [--dry-run]
     uv run scripts/rotate.py rotate --tier 1 --kind machine-key --reason TEXT ...
-    uv run scripts/rotate.py import-ledger [--dry-run]
 
 secrets/inventory.yaml says what each secret is and how to rotate it. The
 API keeps the record: one event per rotation, written here through
 POST /v1/secrets/rotation-events under the owner's own identity (a Clerk
-session token pasted at a hidden prompt). secrets/rotations.jsonl is the
-record from before the API kept one; import-ledger seeds the API from it,
-and nothing writes to it. None of these ever holds a value.
+session token pasted at a hidden prompt). Neither ever holds a value.
 
 Values never pass through stdout, an argument list or a file: a minted value
 goes to Doppler (and to GitHub secrets) on stdin, a pasted value is read
@@ -49,20 +46,19 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 INVENTORY = ROOT / "secrets" / "inventory.yaml"
-LEDGER = ROOT / "secrets" / "rotations.jsonl"
 
 # The repository's own package, standard library only: the record's client,
-# the events it writes, and the ledger import.
+# the events it writes, and entries resolved per config.
 sys.path.insert(0, str(ROOT / "src"))
 from rotator_cog import api as record_api  # noqa: E402
-from rotator_cog import events, legacy  # noqa: E402
+from rotator_cog import entries, events  # noqa: E402
 
 AWS_PROFILE = os.environ.get("AWS_PROFILE", "miniapppolis")
 USER_AGENT = "mini-app-polis-rotate/1"  # Cloudflare blocks default library UAs
 
 
 # --------------------------------------------------------------------------
-# Inventory and ledger
+# Inventory
 # --------------------------------------------------------------------------
 
 
@@ -70,24 +66,15 @@ def load_inventory() -> dict:
     return yaml.safe_load(INVENTORY.read_text())
 
 
-def entry(inv: dict, name: str) -> dict:
+def entry(inv: dict, name: str, config: str = "prd") -> dict:
+    """``name``'s inventory entry, its redeploy list resolved for ``config``."""
     try:
-        e = dict(inv["secrets"][name])
+        e = entries.for_config(inv["secrets"][name], config)
     except KeyError:
         sys.exit(f"{name} is not in {INVENTORY.relative_to(ROOT)}; add it first")
     e.setdefault("configs", ["prd"])
-    e.setdefault("redeploy", [])
     e.setdefault("github", [])
     return e
-
-
-def ledger() -> list[dict]:
-    """The legacy record's rows: import-ledger's input, and nothing else's."""
-    if not LEDGER.exists():
-        return []
-    return [
-        json.loads(line) for line in LEDGER.read_text().splitlines() if line.strip()
-    ]
 
 
 TOKEN_HELP = (
@@ -286,6 +273,8 @@ def cmd_check(args, inv) -> int:
     known = {n for n, e in inv["secrets"].items()}
     known |= {e["id_var"] for e in inv["secrets"].values() if e.get("id_var")}
     known |= {a for e in inv["secrets"].values() for a in e.get("also", [])}
+    # A handover's outgoing value sits in NAME_PREVIOUS until it is retired.
+    known |= {entries.previous_name(n) for n in inv["secrets"]}
     # Non-secret settings are fine to leave out; only report names that look secret.
     secretish = (
         "KEY",
@@ -302,7 +291,11 @@ def cmd_check(args, inv) -> int:
     stale = sorted(
         n
         for n, e in inv["secrets"].items()
-        if args.config in (e.get("configs") or ["prd"]) and n not in names
+        # configs: [] means held outside Doppler, so it is never stale here.
+        if e.get("kind") != "not-rotated"
+        and args.config
+        in (e.get("configs") if e.get("configs") is not None else ["prd"])
+        and n not in names
     )
     for n in missing:
         print(f"not in inventory: {n}")
@@ -336,8 +329,8 @@ def cmd_rotate(args, inv) -> int:
         ]
     if not names:
         sys.exit("nothing selected")
-    entries = {n: entry(inv, n) for n in names}
-    for n, e in entries.items():
+    chosen = {n: entry(inv, n, args.config) for n in names}
+    for n, e in chosen.items():
         if e["kind"] == "not-rotated":
             sys.exit(f"{n} is marked not-rotated")
         if e["configs"] and args.config not in e["configs"]:
@@ -349,7 +342,7 @@ def cmd_rotate(args, inv) -> int:
 
     print(f"{mode} rotation, Doppler {project}/{cfg}:")
     redeploy: set[str] = set()
-    for n, e in sorted(entries.items(), key=lambda kv: (kv[1]["tier"], kv[0])):
+    for n, e in sorted(chosen.items(), key=lambda kv: (kv[1]["tier"], kv[0])):
         gh = ", ".join(f"{t} as {g}" for t, g in github_targets(e, n, cfg))
         print(f"  t{e['tier']} {n} ({e['kind']}){'  + GitHub ' + gh if gh else ''}")
         redeploy |= set(e["redeploy"])
@@ -363,7 +356,7 @@ def cmd_rotate(args, inv) -> int:
     done: dict[str, dict] = {}
 
     # 1. mint and store -------------------------------------------------------
-    for n, e in sorted(entries.items(), key=lambda kv: (kv[1]["tier"], kv[0])):
+    for n, e in sorted(chosen.items(), key=lambda kv: (kv[1]["tier"], kv[0])):
         state = {"old_aws_keys": [], "stored": False}
         kind = e["kind"]
         print(f"\n== {n}")
@@ -445,7 +438,7 @@ def cmd_rotate(args, inv) -> int:
         return 1
 
     # 2. redeploy -------------------------------------------------------------
-    needed = sorted({s for n in done for s in entries[n]["redeploy"]})
+    needed = sorted({s for n in done for s in chosen[n]["redeploy"]})
     if needed:
         print(f"\nRedeploy on Railway ({cfg}): {', '.join(needed)}")
         print(
@@ -455,7 +448,7 @@ def cmd_rotate(args, inv) -> int:
 
     # 3. verify ---------------------------------------------------------------
     for n, state in done.items():
-        e = entries[n]
+        e = chosen[n]
         command = e.get("verify") or (
             machine_verify(inv, n, cfg) if e["kind"] == "machine-key" else None
         )
@@ -468,7 +461,7 @@ def cmd_rotate(args, inv) -> int:
 
     # 4. revoke the old value (routine) ---------------------------------------
     for n, state in done.items():
-        e = entries[n]
+        e = chosen[n]
         if e["kind"] == "aws-access-key":
             if state.get("verified") is False and not args.compromised:
                 print(f"{n}: verify failed, old key left active")
@@ -499,7 +492,7 @@ def cmd_rotate(args, inv) -> int:
             # A secret held outside Doppler is recorded under the config it
             # was rotated for: the record has no other.
             config=cfg,
-            kind=entries[n]["kind"],
+            kind=chosen[n]["kind"],
             mode=mode,
             actor=by,
             minted=state["minted"],
@@ -535,7 +528,7 @@ def cmd_verify(args, inv) -> int:
     api = record_api_for(args)
     failed = []
     for n in names:
-        e = entry(inv, n)
+        e = entry(inv, n, cfg)
         command = e.get("verify") or (
             machine_verify(inv, n, cfg) if e["kind"] == "machine-key" else None
         )
@@ -573,7 +566,7 @@ def cmd_pg_roles(args, inv) -> int:
     connection is pasted at a hidden prompt (the service's DATABASE_PUBLIC_URL).
     """
     project, cfg = inv["doppler_project"], args.config
-    e = entry(inv, args.name)
+    e = entry(inv, args.name, cfg)
     urls = e.get("also", [])
     if not urls:
         sys.exit(f"{args.name} lists no database URLs under also:")
@@ -630,7 +623,7 @@ def cmd_pg_roles(args, inv) -> int:
         del password
         print(f"{var}: role {role} rotated, {'verified' if ok else 'VERIFY FAILED'}")
         var_kind = inv["secrets"].get(var, {}).get("kind")
-        if var_kind in legacy.KINDS:
+        if var_kind in events.KINDS:
             record.append(
                 events.event(
                     name=var,
@@ -672,16 +665,10 @@ def write_events(args, record: list[dict]) -> bool:
         except record_api.ApiError as exc:
             print(f"\nthe API did not record these rotations ({exc}):")
             for left in record[i:]:
-                print(f"   {legacy.describe(left)}")
+                print(f"   {events.describe(left)}")
             return False
     print(f"\nrecorded {len(record)} rotation(s) in the API")
     return True
-
-
-def cmd_import_ledger(args, inv) -> int:
-    """Seed the API's record with the latest rotation per secret and config."""
-    api = None if args.dry_run else record_api_for(args)
-    return legacy.run(ledger(), inv, api, dry_run=args.dry_run)
 
 
 def main() -> int:
@@ -735,13 +722,6 @@ def main() -> int:
     pp.add_argument("--compromised", action="store_true")
     pp.add_argument("--config", default="prd")
 
-    pi = sub.add_parser(
-        "import-ledger",
-        help="seed the API's record from secrets/rotations.jsonl: the latest "
-        "rotation per secret and config",
-    )
-    pi.add_argument("--dry-run", action="store_true")
-
     args = p.parse_args()
     inv = load_inventory()
     args.api = args.api or inv["api_base_url"]
@@ -755,8 +735,6 @@ def dispatch(args, inv) -> int:
     if args.cmd == "list":
         cmd_list(args, inv)
         return 0
-    if args.cmd == "import-ledger":
-        return cmd_import_ledger(args, inv)
     if args.cmd == "check":
         return cmd_check(args, inv)
     if args.cmd == "pg-roles":
