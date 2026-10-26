@@ -210,7 +210,7 @@ def test_drift_is_secret_looking_names_unknown_and_entries_missing() -> None:
 INVENTORY = {
     "doppler_project": "proj",
     "key_prefix": {"dev": "dev_"},
-    "cadence_days": {"machine-key": 90},
+    "cadence_days": {"machine-key": 90, "manual": 365},
     "api_base_url": "https://api.test.invalid",
     "api_base_url_dev": "https://dev-api.test.invalid",
     "secrets": {
@@ -233,12 +233,16 @@ class FakeApi:
     def __init__(self, events: list[RotationEvent], last: Any = None) -> None:
         self.events = events
         self.last = last
+        self.asked: list[Any] = []
 
     def latest(self, config: str) -> list[RotationEvent]:
         return self.events
 
     def last_previous_use(self, machine: str) -> Any:
         return self.last
+
+    def request_task(self, request: Any) -> None:
+        self.asked.append(request)
 
 
 def _run(
@@ -512,3 +516,164 @@ def test_an_exempt_entry_is_never_due_and_never_drift(posted: list) -> None:
     assert "PUBLIC_SITE_KEY" not in kwargs["text"]
     assert "PUBLIC_OTHER_KEY" not in kwargs["text"]
     assert "WARN" not in kwargs["text"] and "issue" not in kwargs["text"].lower()
+
+
+# -- manual secrets ---------------------------------------------------------
+
+MANUAL = {
+    "cadence_days": {"manual": 365},
+    "secrets": {
+        "BREVO_API_KEY": {
+            "kind": "manual",
+            "steps": "Brevo > SMTP & API > API keys > Generate",
+            "revoke": "Brevo > delete the old key",
+            "can": "send email as your domains",
+        },
+        "DEEJAYTOOLS_CLERK_SECRET_KEY": {"kind": "manual", "configs": ["prd", "dev"]},
+        "RAILWAY_TOKEN": {"kind": "manual", "configs": []},
+        "TICK_SECRET": {"kind": "generated"},
+    },
+}
+
+
+def _manual_event(name: str, *, age_days: int, verification: str = "unchecked"):
+    return _event(
+        name, age=dt.timedelta(days=age_days), actor=PERSON, verification=verification
+    )
+
+
+def test_a_manual_secret_is_due_when_never_rotated_past_cadence_or_failed() -> None:
+    latest = {
+        "BREVO_API_KEY": _manual_event("BREVO_API_KEY", age_days=400),
+        "DEEJAYTOOLS_CLERK_SECRET_KEY": _manual_event(
+            "DEEJAYTOOLS_CLERK_SECRET_KEY", age_days=5, verification="failed"
+        ),
+    }
+    due = {d.name: d for d in sweep.manual_due(MANUAL, latest, "prd", now=NOW)}
+    assert set(due) == {
+        "BREVO_API_KEY",
+        "DEEJAYTOOLS_CLERK_SECRET_KEY",
+        "RAILWAY_TOKEN",
+    }
+    assert due["BREVO_API_KEY"].cycle == "after-2025-09-20"
+    assert due["DEEJAYTOOLS_CLERK_SECRET_KEY"].cycle == "failed-2026-10-20"
+    assert due["RAILWAY_TOKEN"].cycle == "never"
+
+
+def test_a_manual_secret_inside_its_cadence_is_not_due() -> None:
+    latest = {
+        n: _manual_event(n, age_days=10)
+        for n in ("BREVO_API_KEY", "DEEJAYTOOLS_CLERK_SECRET_KEY", "RAILWAY_TOKEN")
+    }
+    assert sweep.manual_due(MANUAL, latest, "prd", now=NOW) == []
+
+
+def test_a_secret_held_outside_doppler_is_the_prd_sweeps() -> None:
+    names = [d.name for d in sweep.manual_due(MANUAL, {}, "dev", now=NOW)]
+    assert names == ["DEEJAYTOOLS_CLERK_SECRET_KEY"]
+
+
+def test_the_task_says_how_to_rotate_and_carries_no_value() -> None:
+    (due,) = [
+        d
+        for d in sweep.manual_due(MANUAL, {}, "prd", now=NOW)
+        if d.name == "BREVO_API_KEY"
+    ]
+    request = sweep.task_for(due, MANUAL["secrets"]["BREVO_API_KEY"], "prd")
+    assert request.source == "secret-rotation"
+    assert request.external_id == "secret-rotation.prd.BREVO_API_KEY.never"
+    draft = request.draft
+    assert draft.title == "Rotate BREVO_API_KEY in prd"
+    assert draft.labels == ["person"]
+    assert draft.effort == "S" and draft.done_when and draft.constraints
+    assert "uv run scripts/rotate.py rotate BREVO_API_KEY --reason scheduled`" in (
+        draft.body or ""
+    )
+    assert "Brevo > SMTP & API > API keys > Generate" in (draft.body or "")
+    assert "Brevo > delete the old key" in (draft.body or "")
+
+
+def test_a_dev_task_names_the_config_in_its_command() -> None:
+    (due,) = sweep.manual_due(MANUAL, {}, "dev", now=NOW)
+    request = sweep.task_for(
+        due, MANUAL["secrets"]["DEEJAYTOOLS_CLERK_SECRET_KEY"], "dev"
+    )
+    assert "--reason scheduled --config dev`" in (request.draft.body or "")
+
+
+def test_sweeps_ask_for_one_task_per_due_secret_with_a_stable_key(
+    posted: list, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every day's sweep asks under the same key, and the task manager makes
+    one task per key, so a due secret has one task until it is rotated."""
+    monkeypatch.setenv(worker.SWEEP_TASKS_VAR, "true")
+    fake = FakeDoppler({"DEEJAY_COG_API_KEY": "d", "WATCHER_COG_API_KEY": "w"})
+    events = [
+        _event("DEEJAY_COG_API_KEY", age=dt.timedelta(days=5), retired=NOW),
+        _event("WATCHER_COG_API_KEY", age=dt.timedelta(days=5), retired=NOW),
+    ]
+    first, second = FakeApi(list(events)), FakeApi(list(events))
+    _run(fake, first, posted)
+    _run(fake, second, posted)
+    assert [r.external_id for r in first.asked] == [
+        "secret-rotation.prd.OPENAI_API_KEY.never"
+    ]
+    assert [r.external_id for r in second.asked] == [r.external_id for r in first.asked]
+
+
+def test_a_manual_secret_rotated_recently_asks_for_nothing(
+    posted: list, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(worker.SWEEP_TASKS_VAR, "true")
+    fake = FakeDoppler({"DEEJAY_COG_API_KEY": "d", "WATCHER_COG_API_KEY": "w"})
+    api = FakeApi(
+        [
+            _event("DEEJAY_COG_API_KEY", age=dt.timedelta(days=5), retired=NOW),
+            _event("WATCHER_COG_API_KEY", age=dt.timedelta(days=5), retired=NOW),
+            _manual_event("OPENAI_API_KEY", age_days=30),
+        ]
+    )
+    _run(fake, api, posted)
+    assert api.asked == []
+
+
+def test_with_tasks_off_a_due_secret_is_reported_not_asked_for(
+    posted: list, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(worker.SWEEP_TASKS_VAR, raising=False)
+    fake = FakeDoppler({"DEEJAY_COG_API_KEY": "d", "WATCHER_COG_API_KEY": "w"})
+    api = FakeApi(
+        [
+            _event("DEEJAY_COG_API_KEY", age=dt.timedelta(days=5), retired=NOW),
+            _event("WATCHER_COG_API_KEY", age=dt.timedelta(days=5), retired=NOW),
+        ]
+    )
+    _run(fake, api, posted)
+    assert api.asked == []
+    ((args, kwargs),) = posted
+    assert "OPENAI_API_KEY in prd" in kwargs["text"]
+    assert worker.SWEEP_TASKS_VAR in kwargs["text"]
+
+
+def test_a_refused_task_request_is_reported_and_the_sweep_goes_on(
+    posted: list, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(worker.SWEEP_TASKS_VAR, "true")
+    fake = FakeDoppler(
+        {"DEEJAY_COG_API_KEY": "d", "WATCHER_COG_API_KEY": "w", "NEW_TOKEN": "x"}
+    )
+    api = FakeApi(
+        [
+            _event("DEEJAY_COG_API_KEY", age=dt.timedelta(days=5), retired=NOW),
+            _event("WATCHER_COG_API_KEY", age=dt.timedelta(days=5), retired=NOW),
+        ]
+    )
+
+    def refuse(request: Any) -> None:
+        raise RuntimeError("the API answered 503")
+
+    api.request_task = refuse  # type: ignore[method-assign]
+    _run(fake, api, posted)
+    ((args, kwargs),) = posted
+    assert "rotation task not asked for" in kwargs["text"]
+    assert "NEW_TOKEN" in kwargs["text"]  # drift still reported after it
