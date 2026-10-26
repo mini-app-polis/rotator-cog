@@ -212,16 +212,24 @@ class FakeApi:
         return self.last
 
 
-def _run(fake: FakeDoppler, api: FakeApi, posted: list, check: Any = None) -> list[Any]:
+def _run(
+    fake: FakeDoppler,
+    api: FakeApi,
+    posted: list,
+    check: Any = None,
+    *,
+    config: str = "prd",
+    inventory: Any = None,
+) -> list[Any]:
     steps: list[Any] = []
 
     def redeploy(cfg: str, targets: Any) -> None:
         steps.append(("redeploy", dict(fake.secrets), targets))
 
     worker.run_sweep(
-        "prd",
+        config,
         run_id="s-1",
-        inventory_loader=lambda: INVENTORY,
+        inventory_loader=lambda: inventory or INVENTORY,
         token_reader=lambda config: TOKEN,
         api_factory=lambda machine: api,
         doppler_factory=lambda project, cfg, token: doppler.Doppler(
@@ -406,3 +414,72 @@ def test_with_rotation_off_retirement_still_happens(
     )
     _run(fake, api, posted)
     assert "DEEJAY_COG_API_KEY_PREVIOUS" not in fake.secrets
+
+
+def test_a_consumer_not_deployed_in_a_config_is_not_checked_there(
+    posted: list,
+) -> None:
+    """A key whose consumers run only in production is checked for readiness
+    against the services its dev entry names, and raises no issue in dev."""
+    inventory = {
+        **INVENTORY,
+        "secrets": {
+            "DB_OPS_API_KEY": {
+                "kind": "machine-key",
+                "configs": ["prd", "dev"],
+                "redeploy": {
+                    "prd": ["api-kaianolevine-com", "db-poller"],
+                    "dev": ["api-kaianolevine-com"],
+                },
+            },
+        },
+    }
+    fake = FakeDoppler({"DB_OPS_API_KEY": "dev_old"})
+    api = FakeApi(
+        [
+            _event(
+                "DB_OPS_API_KEY",
+                config="dev",
+                age=dt.timedelta(days=120),
+                retired=NOW,
+            )
+        ]
+    )
+    asked: list[set[str]] = []
+
+    def check(cfg: str, needs: Any) -> list[str]:
+        asked.append(set(needs))
+        return [
+            f"{s} is not in Railway development"
+            for s in needs
+            if s != "api-kaianolevine-com"
+        ]
+
+    _run(fake, api, posted, check, config="dev", inventory=inventory)
+    assert asked == [{"api-kaianolevine-com"}]
+    assert fake.secrets["DB_OPS_API_KEY"] != "dev_old"
+    ((args, kwargs),) = posted
+    assert "not ready to rotate" not in kwargs["text"]
+    assert "db-poller" not in kwargs["text"]
+
+
+def test_an_exempt_entry_is_never_due_and_never_drift(posted: list) -> None:
+    """A not-rotated entry, never rotated and missing from Doppler, is neither
+    rotated nor reported; the same name in Doppler is not unknown either."""
+    inventory = {
+        **INVENTORY,
+        "secrets": {
+            "DEEJAY_COG_API_KEY": INVENTORY["secrets"]["DEEJAY_COG_API_KEY"],
+            "PUBLIC_SITE_KEY": {"kind": "not-rotated", "configs": ["prd", "dev"]},
+            "PUBLIC_OTHER_KEY": {"kind": "not-rotated", "configs": ["prd", "dev"]},
+        },
+    }
+    fake = FakeDoppler({"DEEJAY_COG_API_KEY": "d", "PUBLIC_OTHER_KEY": "public"})
+    api = FakeApi([_event("DEEJAY_COG_API_KEY", age=dt.timedelta(days=5), retired=NOW)])
+    steps = _run(fake, api, posted, inventory=inventory)
+    assert not [s for s in steps if s[0] in ("redeploy", "record")]
+    assert fake.secrets["PUBLIC_OTHER_KEY"] == "public"
+    ((args, kwargs),) = posted
+    assert "PUBLIC_SITE_KEY" not in kwargs["text"]
+    assert "PUBLIC_OTHER_KEY" not in kwargs["text"]
+    assert "WARN" not in kwargs["text"] and "issue" not in kwargs["text"].lower()

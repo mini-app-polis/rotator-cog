@@ -11,7 +11,7 @@ import pytest
 from mini_app_polis.api.contract import RotationRequest
 from test_doppler import FakeDoppler
 
-from rotator_cog import doppler, worker
+from rotator_cog import doppler, entries, worker
 
 #: A stand-in token; tests check it never reaches an error or a report.
 TOKEN = "dp.st.token-for-tests"
@@ -98,7 +98,9 @@ def test_every_machine_key_the_worker_takes_names_its_machine_and_the_api() -> N
     assert taken
     for n in taken:
         assert n.endswith("_API_KEY")
-        assert worker.ACCEPTING_SERVICE in inventory["secrets"][n]["redeploy"]
+        entry = inventory["secrets"][n]
+        for config in entry.get("configs", ["prd"]):
+            assert worker.ACCEPTING_SERVICE in entries.redeploy_for(entry, config)
 
 
 def test_the_wheel_carries_the_inventory_inside_the_package() -> None:

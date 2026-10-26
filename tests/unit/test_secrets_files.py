@@ -35,3 +35,14 @@ def test_every_secret_has_a_tier() -> None:
     for name, entry in _inventory()["secrets"].items():
         if entry["kind"] != "not-rotated":
             assert isinstance(entry.get("tier"), int), f"{name} has no tier"
+
+
+def test_a_per_config_redeploy_names_only_configs_the_entry_is_held_in() -> None:
+    for name, entry in _inventory()["secrets"].items():
+        redeploy = entry.get("redeploy")
+        if isinstance(redeploy, dict):
+            held = entry.get("configs", ["prd"])
+            assert set(redeploy) <= set(held), (
+                f"{name}: redeploy names {sorted(redeploy)}"
+            )
+            assert all(isinstance(v, list) for v in redeploy.values()), name

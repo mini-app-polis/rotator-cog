@@ -48,10 +48,10 @@ ROOT = Path(__file__).resolve().parents[1]
 INVENTORY = ROOT / "secrets" / "inventory.yaml"
 
 # The repository's own package, standard library only: the record's client,
-# and the events it writes.
+# the events it writes, and entries resolved per config.
 sys.path.insert(0, str(ROOT / "src"))
 from rotator_cog import api as record_api  # noqa: E402
-from rotator_cog import events  # noqa: E402
+from rotator_cog import entries, events  # noqa: E402
 
 AWS_PROFILE = os.environ.get("AWS_PROFILE", "miniapppolis")
 USER_AGENT = "mini-app-polis-rotate/1"  # Cloudflare blocks default library UAs
@@ -66,13 +66,13 @@ def load_inventory() -> dict:
     return yaml.safe_load(INVENTORY.read_text())
 
 
-def entry(inv: dict, name: str) -> dict:
+def entry(inv: dict, name: str, config: str = "prd") -> dict:
+    """``name``'s inventory entry, its redeploy list resolved for ``config``."""
     try:
-        e = dict(inv["secrets"][name])
+        e = entries.for_config(inv["secrets"][name], config)
     except KeyError:
         sys.exit(f"{name} is not in {INVENTORY.relative_to(ROOT)}; add it first")
     e.setdefault("configs", ["prd"])
-    e.setdefault("redeploy", [])
     e.setdefault("github", [])
     return e
 
@@ -273,6 +273,8 @@ def cmd_check(args, inv) -> int:
     known = {n for n, e in inv["secrets"].items()}
     known |= {e["id_var"] for e in inv["secrets"].values() if e.get("id_var")}
     known |= {a for e in inv["secrets"].values() for a in e.get("also", [])}
+    # A handover's outgoing value sits in NAME_PREVIOUS until it is retired.
+    known |= {entries.previous_name(n) for n in inv["secrets"]}
     # Non-secret settings are fine to leave out; only report names that look secret.
     secretish = (
         "KEY",
@@ -289,7 +291,11 @@ def cmd_check(args, inv) -> int:
     stale = sorted(
         n
         for n, e in inv["secrets"].items()
-        if args.config in (e.get("configs") or ["prd"]) and n not in names
+        # configs: [] means held outside Doppler, so it is never stale here.
+        if e.get("kind") != "not-rotated"
+        and args.config
+        in (e.get("configs") if e.get("configs") is not None else ["prd"])
+        and n not in names
     )
     for n in missing:
         print(f"not in inventory: {n}")
@@ -323,8 +329,8 @@ def cmd_rotate(args, inv) -> int:
         ]
     if not names:
         sys.exit("nothing selected")
-    entries = {n: entry(inv, n) for n in names}
-    for n, e in entries.items():
+    chosen = {n: entry(inv, n, args.config) for n in names}
+    for n, e in chosen.items():
         if e["kind"] == "not-rotated":
             sys.exit(f"{n} is marked not-rotated")
         if e["configs"] and args.config not in e["configs"]:
@@ -336,7 +342,7 @@ def cmd_rotate(args, inv) -> int:
 
     print(f"{mode} rotation, Doppler {project}/{cfg}:")
     redeploy: set[str] = set()
-    for n, e in sorted(entries.items(), key=lambda kv: (kv[1]["tier"], kv[0])):
+    for n, e in sorted(chosen.items(), key=lambda kv: (kv[1]["tier"], kv[0])):
         gh = ", ".join(f"{t} as {g}" for t, g in github_targets(e, n, cfg))
         print(f"  t{e['tier']} {n} ({e['kind']}){'  + GitHub ' + gh if gh else ''}")
         redeploy |= set(e["redeploy"])
@@ -350,7 +356,7 @@ def cmd_rotate(args, inv) -> int:
     done: dict[str, dict] = {}
 
     # 1. mint and store -------------------------------------------------------
-    for n, e in sorted(entries.items(), key=lambda kv: (kv[1]["tier"], kv[0])):
+    for n, e in sorted(chosen.items(), key=lambda kv: (kv[1]["tier"], kv[0])):
         state = {"old_aws_keys": [], "stored": False}
         kind = e["kind"]
         print(f"\n== {n}")
@@ -432,7 +438,7 @@ def cmd_rotate(args, inv) -> int:
         return 1
 
     # 2. redeploy -------------------------------------------------------------
-    needed = sorted({s for n in done for s in entries[n]["redeploy"]})
+    needed = sorted({s for n in done for s in chosen[n]["redeploy"]})
     if needed:
         print(f"\nRedeploy on Railway ({cfg}): {', '.join(needed)}")
         print(
@@ -442,7 +448,7 @@ def cmd_rotate(args, inv) -> int:
 
     # 3. verify ---------------------------------------------------------------
     for n, state in done.items():
-        e = entries[n]
+        e = chosen[n]
         command = e.get("verify") or (
             machine_verify(inv, n, cfg) if e["kind"] == "machine-key" else None
         )
@@ -455,7 +461,7 @@ def cmd_rotate(args, inv) -> int:
 
     # 4. revoke the old value (routine) ---------------------------------------
     for n, state in done.items():
-        e = entries[n]
+        e = chosen[n]
         if e["kind"] == "aws-access-key":
             if state.get("verified") is False and not args.compromised:
                 print(f"{n}: verify failed, old key left active")
@@ -486,7 +492,7 @@ def cmd_rotate(args, inv) -> int:
             # A secret held outside Doppler is recorded under the config it
             # was rotated for: the record has no other.
             config=cfg,
-            kind=entries[n]["kind"],
+            kind=chosen[n]["kind"],
             mode=mode,
             actor=by,
             minted=state["minted"],
@@ -522,7 +528,7 @@ def cmd_verify(args, inv) -> int:
     api = record_api_for(args)
     failed = []
     for n in names:
-        e = entry(inv, n)
+        e = entry(inv, n, cfg)
         command = e.get("verify") or (
             machine_verify(inv, n, cfg) if e["kind"] == "machine-key" else None
         )
@@ -560,7 +566,7 @@ def cmd_pg_roles(args, inv) -> int:
     connection is pasted at a hidden prompt (the service's DATABASE_PUBLIC_URL).
     """
     project, cfg = inv["doppler_project"], args.config
-    e = entry(inv, args.name)
+    e = entry(inv, args.name, cfg)
     urls = e.get("also", [])
     if not urls:
         sys.exit(f"{args.name} lists no database URLs under also:")
