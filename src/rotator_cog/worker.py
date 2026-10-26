@@ -147,6 +147,10 @@ ACCEPTING_SERVICE = "api-kaianolevine-com"
 #: sweep's own rotations can wait until a rotation has been proven by hand.
 SWEEP_ROTATE_VAR = "ROTATOR_SWEEP_ROTATE"
 
+#: The sweep asks for a task per due manual secret only when this is
+#: "true". Unset, it reports which are due, so the first ask can be checked.
+SWEEP_TASKS_VAR = "ROTATOR_SWEEP_TASKS"
+
 #: How long Railway may take to show a value Doppler has written, and a
 #: redeploy to be running. Each phase waits for both, so the function's
 #: timeout in mini-app-polis/infra covers two of each.
@@ -717,7 +721,8 @@ def run_sweep(
     iam_factory: Callable[[], Any] = _iam,
     aws_verify: AwsVerifier | None = None,
 ) -> None:
-    """Sweep one config: retire, rotate the most overdue key, report drift."""
+    """Sweep one config: retire, rotate the most overdue key, ask for manual
+    rotations, report drift."""
     with run_report(
         SWEEP_FLOW_NAME, repo=REPO, run_id=run_id, version=__version__
     ) as report:
@@ -815,7 +820,28 @@ def run_sweep(
                 )
                 break
 
-        # 3. Drift between Doppler and the inventory.
+        # 3. A task for each due manual secret: a person rotates it.
+        manual = sweep_mod.manual_due(inventory, latest, config, now=at)
+        report.count("manual_due", len(manual))
+        asking = os.environ.get(SWEEP_TASKS_VAR, "").strip().lower() == "true"
+        for due in manual:
+            label = f"{due.name} in {config}"
+            if not asking:
+                report.note(
+                    f"manual secret due, no task asked: {SWEEP_TASKS_VAR} is off", label
+                )
+                continue
+            entry = inventory["secrets"][due.name]
+            try:
+                api.request_task(sweep_mod.task_for(due, entry, config))
+            except Exception as exc:  # noqa: BLE001 — one refusal must not stop the rest
+                report.issue(
+                    "rotation task not asked for", label, detail=str(exc)[:500]
+                )
+                continue
+            report.note("rotation task asked for", label)
+
+        # 4. Drift between Doppler and the inventory.
         unknown, missing = sweep_mod.drift(store.names(), inventory, config)
         for name in unknown:
             report.issue("in Doppler, not in the inventory", f"{name} in {config}")

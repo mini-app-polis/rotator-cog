@@ -21,7 +21,15 @@ Infra's schedule sends one ``rotation.sweep`` per config each day. A sweep:
    key is still live is not rotated again: a second handover would cut its
    callers off. A latest rotation that failed is reported, not retried: it
    needs a person.
-3. **Reports drift**: names in Doppler that look secret and have no
+3. **Asks for a task per due manual secret.** A secret minted in a
+   provider's console cannot be rotated here, so when one is due (never
+   rotated, past its cadence, or its last check failed) the sweep asks the
+   task manager for one task telling a person how: the rotate.py command,
+   the steps and the revoke, never a value. The task's key names the
+   rotation it follows, so a daily sweep asks for the same task until the
+   secret is rotated. A secret held outside Doppler (``configs: []``) is
+   asked for by the prd sweep.
+4. **Reports drift**: names in Doppler that look secret and have no
    inventory entry, and inventory entries the config should hold but does
    not, as ``scripts/rotate.py check`` does.
 """
@@ -38,6 +46,8 @@ from mini_app_polis.api.contract import (
     RotationEvent,
     RotationEventCreate,
     RotationRequest,
+    TaskCreateRequest,
+    TaskDraft,
 )
 
 from . import doppler as doppler_mod
@@ -76,6 +86,10 @@ class SweepApi(Protocol):
         """When ``machine`` last proved itself with its previous key."""
         ...
 
+    def request_task(self, request: TaskCreateRequest) -> None:
+        """Ask the task manager for one task; asking again makes no second."""
+        ...
+
 
 class _Api:
     def __init__(self, machine_name: str) -> None:
@@ -88,6 +102,9 @@ class _Api:
         data = self._client.get("/v1/secrets/key-use", {"machine": machine})["data"]
         last = data.get("last_used")
         return datetime.fromisoformat(last) if last else None
+
+    def request_task(self, request: TaskCreateRequest) -> None:
+        self._client.request_task(request)
 
 
 def api(machine_name: str) -> SweepApi:
@@ -162,6 +179,110 @@ def due(
         if now - last.minted >= timedelta(days=cadence_days[name]):
             ready.append((last.minted, name))
     return [name for _, name in sorted(ready)], sorted(failed)
+
+
+@dataclass(frozen=True)
+class ManualDue:
+    """A manual secret that is due, and which rotation it follows."""
+
+    name: str
+    #: Names the rotation this one follows, so the task's key stays the same
+    #: until the secret is rotated: ``never``, ``after-<date>`` or
+    #: ``failed-<date>``.
+    cycle: str
+    why: str
+
+
+def held_for_sweep(entry: Mapping[str, Any], config: str) -> bool:
+    """Whether ``config``'s sweep looks after ``entry``.
+
+    An entry held outside Doppler (``configs: []``) is recorded under prd,
+    so the prd sweep looks after it.
+    """
+    configs = entry.get("configs")
+    if configs is None:
+        return config == "prd"
+    return config in configs or (not configs and config == "prd")
+
+
+def manual_due(
+    inventory: Mapping[str, Any],
+    latest: Mapping[str, RotationEvent],
+    config: str,
+    *,
+    now: datetime,
+) -> list[ManualDue]:
+    """The manual secrets ``config``'s sweep should ask a person to rotate."""
+    cadence = timedelta(days=int(inventory["cadence_days"]["manual"]))
+    out: list[ManualDue] = []
+    for name, entry in sorted(inventory["secrets"].items()):
+        if entry.get("kind") != "manual" or not held_for_sweep(entry, config):
+            continue
+        last = latest.get(name)
+        if last is None:
+            out.append(
+                ManualDue(name, "never", "It has never been recorded as rotated.")
+            )
+        elif last.verification == "failed":
+            day = last.minted.date().isoformat()
+            out.append(
+                ManualDue(
+                    name,
+                    f"failed-{day}",
+                    f"Its rotation of {day} was recorded as failed.",
+                )
+            )
+        elif now - last.minted >= cadence:
+            day = last.minted.date().isoformat()
+            out.append(
+                ManualDue(
+                    name,
+                    f"after-{day}",
+                    f"It was last rotated on {day}, and is due every "
+                    f"{cadence.days} days.",
+                )
+            )
+    return out
+
+
+def task_for(
+    due: ManualDue, entry: Mapping[str, Any], config: str
+) -> TaskCreateRequest:
+    """The task asking a person to rotate ``due``: how, never a value."""
+    command = f"uv run scripts/rotate.py rotate {due.name} --reason scheduled"
+    if config != "prd":
+        command += f" --config {config}"
+    lines = [
+        f"{due.why} It is minted in a provider's console, so rotator-cog "
+        "cannot rotate it itself.",
+        "",
+        f"Run from a rotator-cog checkout: `{command}`",
+        "It prints the steps, takes the new value at a hidden prompt, writes "
+        "it where the inventory says, and records the rotation.",
+        "",
+        f"Steps: {entry.get('steps', 'see the provider console')}",
+        f"Revoke: {entry.get('revoke', 'revoke the old value at the provider')}",
+    ]
+    if entry.get("can"):
+        lines.append(f"What it can do: {entry['can']}")
+    return TaskCreateRequest(
+        source="secret-rotation",
+        external_id=f"secret-rotation.{config}.{due.name}.{due.cycle}",
+        draft=TaskDraft(
+            title=f"Rotate {due.name} in {config}",
+            done_when=(
+                f"`{command}` has recorded a rotation of {due.name} in "
+                f"{config}, and the old value is revoked."
+            ),
+            constraints=(
+                "The new value goes in only at rotate.py's hidden prompt: "
+                "never into a chat, a ticket or a file."
+            ),
+            effort="S",
+            body="\n".join(lines),
+            labels=["person"],
+        ),
+    )
 
 
 def drift(

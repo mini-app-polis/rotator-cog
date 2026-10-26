@@ -93,6 +93,14 @@ A daily sweep per config (14:00 UTC) does the rest:
   last rotation failed is reported each day rather than retried. A key the
   services are not ready for is reported "not ready to rotate" and passed
   over for the next most overdue, so it cannot hold up the rest.
+- **Asks for a task per due manual secret**, once `ROTATOR_SWEEP_TASKS`
+  is `true` in Doppler prd. Until then it only reports which are due. A
+  manual secret is due when it has never been recorded as rotated, its
+  cadence has passed, or its last rotation was recorded as failed. The task
+  (`ROT-`, tagged `person`) gives the `rotate.py rotate` command, the steps
+  and the revoke, never a value. The sweep asks under a key naming the
+  rotation the secret follows, so it gets one task until it is rotated. A
+  secret held outside Doppler is asked for by the prd sweep.
 - **Reports drift**, as `rotate.py check` does, in the run report.
 
 In development, a service reads only the shared variables referenced on
