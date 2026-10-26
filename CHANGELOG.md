@@ -1,3 +1,10 @@
+## [1.8.2](https://github.com/mini-app-polis/rotator-cog/compare/v1.8.1...v1.8.2) (2026-10-26)
+
+
+### Bug Fixes
+
+* **sweep:** list every Doppler credential, scope consumers per config, and make check agree with the sweep ([f4c2a66](https://github.com/mini-app-polis/rotator-cog/commit/f4c2a66f1cade8e9e1d3250fd8384119e7759c72))
+
 ## [1.8.1](https://github.com/mini-app-polis/rotator-cog/compare/v1.8.0...v1.8.1) (2026-10-26)
 
 
