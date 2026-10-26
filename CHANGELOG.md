@@ -1,3 +1,11 @@
+## [1.8.3](https://github.com/mini-app-polis/rotator-cog/compare/v1.8.2...v1.8.3) (2026-10-26)
+
+
+### Bug Fixes
+
+* **deps:** bump miniapppolis-common-utils to 6.28.0 ([fb27ece](https://github.com/mini-app-polis/rotator-cog/commit/fb27ece622b3c6ac5819adb90b4654bc214e9fc9))
+* **record:** record a rotation with no automatic check as unchecked and count it as rotated ([4455e6e](https://github.com/mini-app-polis/rotator-cog/commit/4455e6e513575206e5147536a6522c69ff2d367b))
+
 ## [1.8.2](https://github.com/mini-app-polis/rotator-cog/compare/v1.8.1...v1.8.2) (2026-10-26)
 
 
