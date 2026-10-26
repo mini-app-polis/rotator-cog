@@ -9,16 +9,16 @@ rotates them; the record of every rotation is kept by the API
 (`/v1/secrets/rotation-events`). None of it ever holds a value: values live
 in Doppler.
 
-- [`secrets/`](secrets/README.md): the inventory, the legacy record the API
-  is seeded from, and the compromise runbook.
+- [`secrets/`](secrets/README.md): the inventory and the compromise
+  runbook.
 - [`docs/provider-assessment.md`](docs/provider-assessment.md): which
   manually minted secrets the rotator could take over, and why each stays
   manual.
 - `scripts/rotate.py`: lists what is due, checks Doppler against the
   inventory, and rotates, verifies and records a secret.
-- `src/rotator_cog`: the record's client, the events rotate.py writes, and
-  the import of the legacy record. Those three modules are standard library
-  only, so rotate.py imports them and stays a plain `uv run` script.
+- `src/rotator_cog`: the record's client and the events rotate.py writes.
+  Those two modules are standard library only, so rotate.py imports them
+  and stays a plain `uv run` script.
 - `src/rotator_cog/worker.py`: the Lambda worker behind rotator-cog's queue
   (declared in mini-app-polis/infra). It takes `rotation.job` and
   `rotation.sweep` messages. A job is checked against the inventory packaged
@@ -76,9 +76,9 @@ uv run mypy src/
 ```
 
 The tests need no secrets and reach nothing. `tests/unit/` checks the
-inventory's and the legacy record's shape (every rotated kind has a
-cadence, and no row carries a value), the events rotate.py and the import
-write against the API's contract, the clients against fake transports,
+inventory's shape (every rotated kind has a cadence and every secret a
+tier), the events rotate.py writes against the API's contract, the
+clients against fake transports,
 and the worker's message handling, job checks, retries and token reads
 against fakes. `tests/integration/` runs `lambda_handler` from an SQS
 record through the real Doppler, Railway and API clients, with the far

@@ -80,3 +80,24 @@ def test_now_is_utc_to_the_second() -> None:
     parsed = dt.datetime.fromisoformat(events.now())
     assert parsed.utcoffset() == dt.timedelta(0)
     assert parsed.microsecond == 0
+
+
+def test_kinds_are_the_rotated_kinds() -> None:
+    assert set(events.KINDS) == {"machine-key", "generated", "aws-access-key", "manual"}
+
+
+def test_describe_names_the_event_without_a_value() -> None:
+    e = events.event(
+        name="DEEJAY_COG_API_KEY",
+        config="prd",
+        kind="machine-key",
+        mode="routine",
+        actor="owner@example.com",
+        minted="2026-10-22T10:00:00+00:00",
+        retired=None,
+        verified=True,
+    )
+    line = events.describe(e)
+    assert "DEEJAY_COG_API_KEY" in line
+    assert "prd" in line
+    assert "not retired" in line

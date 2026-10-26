@@ -32,6 +32,9 @@ CREATE_FIELDS = (
     "aws_key_last4",
 )
 
+#: The kinds an event can have: the inventory's, less not-rotated.
+KINDS = ("machine-key", "generated", "aws-access-key", "manual")
+
 #: Why verification is "failed". Each is a fixed sentence: the contract
 #: bounds the reason, and nothing a check printed belongs in it.
 CHECK_FAILED = "The check failed when this was rotated."
@@ -103,6 +106,15 @@ def last_minted(events: Iterable[Mapping[str, Any]]) -> dict[tuple[str, str], st
 
 
 def utc(when: str) -> str:
-    """``when`` in one spelling, so times from the API and the ledger compare."""
+    """``when`` in one spelling, so times from the API and rotate.py compare."""
     parsed = dt.datetime.fromisoformat(when.replace("Z", "+00:00"))
     return parsed.astimezone(dt.UTC).replace(microsecond=0).isoformat()
+
+
+def describe(e: Mapping[str, Any]) -> str:
+    """One event as a line: names, configs, kinds and times only."""
+    retired = f"retired {e['retired']}" if e["retired"] else "not retired"
+    return (
+        f"{e['minted']}  {e['config']:<3}  {e['name']:<38} {e['kind']:<15} "
+        f"{e['mode']:<11} {e['verification']:<6}  {retired}"
+    )

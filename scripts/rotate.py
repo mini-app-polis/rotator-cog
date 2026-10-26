@@ -9,14 +9,11 @@
     uv run scripts/rotate.py check [--config prd]
     uv run scripts/rotate.py rotate NAME [NAME ...] --reason TEXT [--compromised] [--config prd] [--dry-run]
     uv run scripts/rotate.py rotate --tier 1 --kind machine-key --reason TEXT ...
-    uv run scripts/rotate.py import-ledger [--dry-run]
 
 secrets/inventory.yaml says what each secret is and how to rotate it. The
 API keeps the record: one event per rotation, written here through
 POST /v1/secrets/rotation-events under the owner's own identity (a Clerk
-session token pasted at a hidden prompt). secrets/rotations.jsonl is the
-record from before the API kept one; import-ledger seeds the API from it,
-and nothing writes to it. None of these ever holds a value.
+session token pasted at a hidden prompt). Neither ever holds a value.
 
 Values never pass through stdout, an argument list or a file: a minted value
 goes to Doppler (and to GitHub secrets) on stdin, a pasted value is read
@@ -49,20 +46,19 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 INVENTORY = ROOT / "secrets" / "inventory.yaml"
-LEDGER = ROOT / "secrets" / "rotations.jsonl"
 
 # The repository's own package, standard library only: the record's client,
-# the events it writes, and the ledger import.
+# and the events it writes.
 sys.path.insert(0, str(ROOT / "src"))
 from rotator_cog import api as record_api  # noqa: E402
-from rotator_cog import events, legacy  # noqa: E402
+from rotator_cog import events  # noqa: E402
 
 AWS_PROFILE = os.environ.get("AWS_PROFILE", "miniapppolis")
 USER_AGENT = "mini-app-polis-rotate/1"  # Cloudflare blocks default library UAs
 
 
 # --------------------------------------------------------------------------
-# Inventory and ledger
+# Inventory
 # --------------------------------------------------------------------------
 
 
@@ -79,15 +75,6 @@ def entry(inv: dict, name: str) -> dict:
     e.setdefault("redeploy", [])
     e.setdefault("github", [])
     return e
-
-
-def ledger() -> list[dict]:
-    """The legacy record's rows: import-ledger's input, and nothing else's."""
-    if not LEDGER.exists():
-        return []
-    return [
-        json.loads(line) for line in LEDGER.read_text().splitlines() if line.strip()
-    ]
 
 
 TOKEN_HELP = (
@@ -630,7 +617,7 @@ def cmd_pg_roles(args, inv) -> int:
         del password
         print(f"{var}: role {role} rotated, {'verified' if ok else 'VERIFY FAILED'}")
         var_kind = inv["secrets"].get(var, {}).get("kind")
-        if var_kind in legacy.KINDS:
+        if var_kind in events.KINDS:
             record.append(
                 events.event(
                     name=var,
@@ -672,16 +659,10 @@ def write_events(args, record: list[dict]) -> bool:
         except record_api.ApiError as exc:
             print(f"\nthe API did not record these rotations ({exc}):")
             for left in record[i:]:
-                print(f"   {legacy.describe(left)}")
+                print(f"   {events.describe(left)}")
             return False
     print(f"\nrecorded {len(record)} rotation(s) in the API")
     return True
-
-
-def cmd_import_ledger(args, inv) -> int:
-    """Seed the API's record with the latest rotation per secret and config."""
-    api = None if args.dry_run else record_api_for(args)
-    return legacy.run(ledger(), inv, api, dry_run=args.dry_run)
 
 
 def main() -> int:
@@ -735,13 +716,6 @@ def main() -> int:
     pp.add_argument("--compromised", action="store_true")
     pp.add_argument("--config", default="prd")
 
-    pi = sub.add_parser(
-        "import-ledger",
-        help="seed the API's record from secrets/rotations.jsonl: the latest "
-        "rotation per secret and config",
-    )
-    pi.add_argument("--dry-run", action="store_true")
-
     args = p.parse_args()
     inv = load_inventory()
     args.api = args.api or inv["api_base_url"]
@@ -755,8 +729,6 @@ def dispatch(args, inv) -> int:
     if args.cmd == "list":
         cmd_list(args, inv)
         return 0
-    if args.cmd == "import-ledger":
-        return cmd_import_ledger(args, inv)
     if args.cmd == "check":
         return cmd_check(args, inv)
     if args.cmd == "pg-roles":
