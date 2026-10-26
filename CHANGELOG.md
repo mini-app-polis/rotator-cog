@@ -1,3 +1,15 @@
+# [1.10.0](https://github.com/mini-app-polis/rotator-cog/compare/v1.9.0...v1.10.0) (2026-10-26)
+
+
+### Bug Fixes
+
+* **deps:** bump miniapppolis-common-utils to 6.30.0 ([ed457bb](https://github.com/mini-app-polis/rotator-cog/commit/ed457bb39ca2b71149dda14d34309b20ff38964d))
+
+
+### Features
+
+* **sweep:** flag Doppler secret changes that no recorded rotation explains ([5597045](https://github.com/mini-app-polis/rotator-cog/commit/5597045e079f63e732c69e70ab79d88aac67e317))
+
 # [1.9.0](https://github.com/mini-app-polis/rotator-cog/compare/v1.8.3...v1.9.0) (2026-10-26)
 
 
