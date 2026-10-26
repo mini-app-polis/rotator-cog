@@ -7,7 +7,7 @@ from typing import Any
 
 import httpx
 import pytest
-from mini_app_polis.api.contract import RotationEvent
+from mini_app_polis.api.contract import RotationEvent, SecretChange
 from test_doppler import FakeDoppler
 
 from rotator_cog import doppler, sweep, worker
@@ -230,19 +230,36 @@ INVENTORY = {
 
 
 class FakeApi:
-    def __init__(self, events: list[RotationEvent], last: Any = None) -> None:
-        self.events = events
+    def __init__(
+        self,
+        events: list[RotationEvent],
+        last: Any = None,
+        *,
+        reported: list[Any] | None = None,
+        all_events: list[RotationEvent] | None = None,
+    ) -> None:
+        self.events_ = events
         self.last = last
         self.asked: list[Any] = []
+        self.reported = reported or []
+        self.all_events = all_events
+        self.change_reads: list[Any] = []
 
     def latest(self, config: str) -> list[RotationEvent]:
-        return self.events
+        return self.events_
 
     def last_previous_use(self, machine: str) -> Any:
         return self.last
 
     def request_task(self, request: Any) -> None:
         self.asked.append(request)
+
+    def events(self, config: str) -> list[RotationEvent]:
+        return self.all_events if self.all_events is not None else self.events_
+
+    def changes(self, config: str, *, since: Any, until: Any) -> list[Any]:
+        self.change_reads.append((config, since, until))
+        return self.reported
 
 
 def _run(
@@ -677,3 +694,184 @@ def test_a_refused_task_request_is_reported_and_the_sweep_goes_on(
     ((args, kwargs),) = posted
     assert "rotation task not asked for" in kwargs["text"]
     assert "NEW_TOKEN" in kwargs["text"]  # drift still reported after it
+
+
+# ── changes Doppler reported ─────────────────────────────────────────────
+
+CHANGE_INVENTORY = {
+    "secrets": {
+        "DEEJAY_COG_API_KEY": {"kind": "machine-key"},
+        "AWS_SECRET_ACCESS_KEY": {
+            "kind": "aws-access-key",
+            "id_var": "AWS_ACCESS_KEY_ID",
+            "also": ["AWS_SECRET_ACCESS_KEY_MIRROR"],
+        },
+    }
+}
+
+
+def _change(
+    name: str = "DEEJAY_COG_API_KEY",
+    *,
+    at: dt.datetime = NOW - dt.timedelta(hours=30),
+    config: str = "prd",
+    change: str = "updated",
+) -> SecretChange:
+    return SecretChange(
+        name=name,
+        config=config,  # type: ignore[arg-type]
+        change=change,  # type: ignore[arg-type]
+        changed_at=at,
+        received_id="00000000-0000-4000-8000-0000000000aa",
+    )
+
+
+def _minted(name: str, at: dt.datetime) -> RotationEvent:
+    return _event(name, age=NOW - at)
+
+
+def test_the_sweep_judges_one_day_of_changes_a_day_old() -> None:
+    since, until = sweep.change_window(NOW)
+    assert until == NOW - dt.timedelta(hours=24)
+    assert since == NOW - dt.timedelta(hours=48)
+
+
+def test_a_change_with_its_rotation_is_explained() -> None:
+    change = _change()
+    events = [_minted("DEEJAY_COG_API_KEY", change.changed_at - dt.timedelta(hours=1))]
+    assert sweep.unexplained([change], events, CHANGE_INVENTORY) == []
+
+
+def test_a_change_just_before_its_rotation_is_minted_is_explained() -> None:
+    """The two clocks differ: a few minutes either way still matches."""
+    change = _change()
+    events = [
+        _minted("DEEJAY_COG_API_KEY", change.changed_at + dt.timedelta(minutes=3))
+    ]
+    assert sweep.unexplained([change], events, CHANGE_INVENTORY) == []
+
+
+def test_a_change_long_after_its_last_rotation_is_not_explained() -> None:
+    change = _change()
+    events = [_minted("DEEJAY_COG_API_KEY", change.changed_at - dt.timedelta(hours=3))]
+    assert sweep.unexplained([change], events, CHANGE_INVENTORY) == [change]
+
+
+def test_a_rotation_of_another_secret_explains_nothing() -> None:
+    change = _change()
+    events = [_minted("AWS_SECRET_ACCESS_KEY", change.changed_at)]
+    assert sweep.unexplained([change], events, CHANGE_INVENTORY) == [change]
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "DEEJAY_COG_API_KEY_PREVIOUS",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY_MIRROR",
+    ],
+)
+def test_names_written_with_a_secret_are_explained_over_its_handover(
+    name: str,
+) -> None:
+    """The previous slot is deleted days after the rotation; a key id and its
+    copies move with the secret."""
+    owner = (
+        "DEEJAY_COG_API_KEY" if name.startswith("DEEJAY") else "AWS_SECRET_ACCESS_KEY"
+    )
+    change = _change(name, change="removed")
+    events = [_minted(owner, change.changed_at - dt.timedelta(days=6))]
+    assert sweep.unexplained([change], events, CHANGE_INVENTORY) == []
+    stale = [_minted(owner, change.changed_at - dt.timedelta(days=9))]
+    assert sweep.unexplained([change], stale, CHANGE_INVENTORY) == [change]
+
+
+def test_a_name_the_inventory_does_not_list_is_left_to_drift() -> None:
+    assert sweep.unexplained([_change("SOME_SETTING")], [], CHANGE_INVENTORY) == []
+
+
+def test_the_change_task_is_keyed_by_the_change_and_carries_no_value() -> None:
+    change = _change(at=dt.datetime(2026, 10, 24, 8, 30, 15, tzinfo=dt.UTC))
+    request = sweep.change_task_for(change, "dev")
+
+    assert request.external_id == (
+        "secret-rotation.dev.DEEJAY_COG_API_KEY.changed-20261024T083015Z"
+    )
+    assert request.draft.labels == ["person"]
+    body = request.draft.body or ""
+    assert "--reason recorded --config dev`" in body
+    assert "revert it in Doppler" in body
+
+
+def test_a_sweep_asks_for_a_task_per_unexplained_change(
+    posted: list, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(worker.SWEEP_TASKS_VAR, "true")
+    fake = FakeDoppler({"DEEJAY_COG_API_KEY": "d", "WATCHER_COG_API_KEY": "w"})
+    latest = [
+        _event("DEEJAY_COG_API_KEY", age=dt.timedelta(days=5), retired=NOW),
+        _event("WATCHER_COG_API_KEY", age=dt.timedelta(days=5), retired=NOW),
+        _manual_event("OPENAI_API_KEY", age_days=30),
+    ]
+    explained = _change("WATCHER_COG_API_KEY")
+    stray = _change("DEEJAY_COG_API_KEY")
+    api = FakeApi(
+        latest,
+        reported=[explained, stray],
+        all_events=[
+            *latest,
+            _minted(
+                "WATCHER_COG_API_KEY", explained.changed_at - dt.timedelta(minutes=20)
+            ),
+        ],
+    )
+
+    _run(fake, api, posted)
+
+    assert [r.external_id for r in api.asked] == [
+        sweep.change_task_for(stray, "prd").external_id
+    ]
+    ((config, since, until),) = api.change_reads
+    assert (config, since, until) == ("prd", *sweep.change_window(NOW))
+    ((args, kwargs),) = posted
+    assert "changed outside a rotation" in kwargs["text"]
+    assert "DEEJAY_COG_API_KEY in prd" in kwargs["text"]
+
+
+def test_with_tasks_off_an_unexplained_change_is_only_reported(
+    posted: list, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(worker.SWEEP_TASKS_VAR, raising=False)
+    fake = FakeDoppler({"DEEJAY_COG_API_KEY": "d", "WATCHER_COG_API_KEY": "w"})
+    latest = [
+        _event("DEEJAY_COG_API_KEY", age=dt.timedelta(days=5), retired=NOW),
+        _event("WATCHER_COG_API_KEY", age=dt.timedelta(days=5), retired=NOW),
+    ]
+    api = FakeApi(latest, reported=[_change("DEEJAY_COG_API_KEY")])
+    _run(fake, api, posted)
+    assert api.asked == []
+    ((args, kwargs),) = posted
+    assert "changed outside a rotation" in kwargs["text"]
+
+
+def test_changes_that_cannot_be_read_are_reported_and_the_sweep_goes_on(
+    posted: list,
+) -> None:
+    fake = FakeDoppler(
+        {"DEEJAY_COG_API_KEY": "d", "WATCHER_COG_API_KEY": "w", "NEW_TOKEN": "x"}
+    )
+    api = FakeApi(
+        [
+            _event("DEEJAY_COG_API_KEY", age=dt.timedelta(days=5), retired=NOW),
+            _event("WATCHER_COG_API_KEY", age=dt.timedelta(days=5), retired=NOW),
+        ]
+    )
+
+    def unavailable(config: str, **kwargs: Any) -> list[Any]:
+        raise RuntimeError("the API answered 404")
+
+    api.changes = unavailable  # type: ignore[method-assign]
+    _run(fake, api, posted)
+    ((args, kwargs),) = posted
+    assert "secret changes not read" in kwargs["text"]
+    assert "NEW_TOKEN" in kwargs["text"]

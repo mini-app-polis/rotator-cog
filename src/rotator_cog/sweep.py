@@ -32,6 +32,16 @@ Infra's schedule sends one ``rotation.sweep`` per config each day. A sweep:
 4. **Reports drift**: names in Doppler that look secret and have no
    inventory entry, and inventory entries the config should hold but does
    not, as ``scripts/rotate.py check`` does.
+5. **Judges the secret changes Doppler reported** (its secrets.update
+   webhook, read from ``GET /v1/secrets/changes``) once they are a day old,
+   so each is judged once and a rotation recorded late still counts. A
+   change to an inventory secret is explained by a rotation of it minted
+   from two hours before the change to five minutes after; a change to its
+   ``_PREVIOUS`` slot, or to a name written with it (its key id, its
+   copies), by its rotation in the eight days before. A change nothing
+   explains was made outside the rotation process: it is reported, and one
+   task asks a person to record it with rotate.py or revert it. Names only;
+   no value is ever read.
 """
 
 from __future__ import annotations
@@ -46,6 +56,7 @@ from mini_app_polis.api.contract import (
     RotationEvent,
     RotationEventCreate,
     RotationRequest,
+    SecretChange,
     TaskCreateRequest,
     TaskDraft,
 )
@@ -71,6 +82,19 @@ SECRETISH = (
     "HEALTHCHECKS_URL",
 )
 
+#: A change is judged once it is this old, so a rotation recorded after its
+#: check and redeploy still explains it; the daily sweep reads one day of them.
+CHANGE_JUDGED_AFTER = timedelta(hours=24)
+CHANGE_READ_SPAN = timedelta(hours=24)
+#: A rotation explains a change to its secret minted this long before it...
+EXPLAINED_BEFORE = timedelta(hours=2)
+#: ...or this long after (the two clocks are not the same clock).
+EXPLAINED_AFTER = timedelta(minutes=5)
+#: A rotation explains changes to its previous slot and the names written
+#: with it over the whole handover: a previous key is retired within seven
+#: days, then deleted.
+HANDOVER_EXPLAINS = timedelta(days=8)
+
 #: Names Doppler adds to every config.
 DOPPLER_OWN = frozenset({"DOPPLER_PROJECT", "DOPPLER_CONFIG", "DOPPLER_ENVIRONMENT"})
 
@@ -90,6 +114,16 @@ class SweepApi(Protocol):
         """Ask the task manager for one task; asking again makes no second."""
         ...
 
+    def events(self, config: str) -> list[RotationEvent]:
+        """The rotation events in ``config``, newest minted first."""
+        ...
+
+    def changes(
+        self, config: str, *, since: datetime, until: datetime
+    ) -> list[SecretChange]:
+        """The secret names Doppler reported changed in ``config``."""
+        ...
+
 
 class _Api:
     def __init__(self, machine_name: str) -> None:
@@ -105,6 +139,18 @@ class _Api:
 
     def request_task(self, request: TaskCreateRequest) -> None:
         self._client.request_task(request)
+
+    def events(self, config: str) -> list[RotationEvent]:
+        return self._client.list_rotation_events(config=config)  # type: ignore[arg-type]
+
+    def changes(
+        self, config: str, *, since: datetime, until: datetime
+    ) -> list[SecretChange]:
+        return self._client.list_secret_changes(
+            config=config,  # type: ignore[arg-type]
+            since=since,
+            until=until,
+        )
 
 
 def api(machine_name: str) -> SweepApi:
@@ -305,6 +351,91 @@ def drift(
         and n not in names
     )
     return unknown, missing
+
+
+def change_window(now: datetime) -> tuple[datetime, datetime]:
+    """(since, until) of the changes a sweep at ``now`` judges: one day of
+    them, a day old."""
+    until = now - CHANGE_JUDGED_AFTER
+    return until - CHANGE_READ_SPAN, until
+
+
+def owner_of(name: str, inventory: Mapping[str, Any]) -> tuple[str, bool] | None:
+    """(Inventory secret ``name`` belongs to, whether it is the secret itself).
+
+    None for a name the inventory does not list, which drift reports. A
+    secret's ``_PREVIOUS`` slot, its key id variable and its copies belong to
+    it but are not it.
+    """
+    secrets: Mapping[str, Any] = inventory["secrets"]
+    if name in secrets:
+        return name, True
+    for secret, entry in secrets.items():
+        if name == doppler_mod.previous_name(secret):
+            return secret, False
+        if name == entry.get("id_var") or name in entry.get("also", []):
+            return secret, False
+    return None
+
+
+def unexplained(
+    changes: Iterable[SecretChange],
+    events: Iterable[RotationEvent],
+    inventory: Mapping[str, Any],
+) -> list[SecretChange]:
+    """The changes to inventory names that no recorded rotation explains."""
+    minted: dict[str, list[datetime]] = {}
+    for event in events:
+        minted.setdefault(event.name, []).append(event.minted)
+    out: list[SecretChange] = []
+    for change in changes:
+        owner = owner_of(change.name, inventory)
+        if owner is None:
+            continue
+        secret, itself = owner
+        before = EXPLAINED_BEFORE if itself else HANDOVER_EXPLAINS
+        earliest = change.changed_at - before
+        latest = change.changed_at + EXPLAINED_AFTER
+        if not any(earliest <= m <= latest for m in minted.get(secret, [])):
+            out.append(change)
+    return out
+
+
+def change_task_for(change: SecretChange, config: str) -> TaskCreateRequest:
+    """The task asking a person to record or revert an unexplained change."""
+    at = change.changed_at.strftime("%Y%m%dT%H%M%SZ")
+    when = change.changed_at.strftime("%Y-%m-%d %H:%M UTC")
+    record = f"uv run scripts/rotate.py rotate {change.name} --reason recorded"
+    if config != "prd":
+        record += f" --config {config}"
+    lines = [
+        f"Doppler reported {change.name} {change.change} in {config} at {when}, "
+        "and no recorded rotation explains it: the value was changed outside "
+        "the rotation process.",
+        "",
+        "If the change was meant, rotate the secret properly so it is "
+        f"recorded: `{record}` from a rotator-cog checkout.",
+        "If it was not, revert it in Doppler, then find out who changed it "
+        "(Doppler's activity log).",
+    ]
+    return TaskCreateRequest(
+        source="secret-rotation",
+        external_id=f"secret-rotation.{config}.{change.name}.changed-{at}",
+        draft=TaskDraft(
+            title=f"Record or revert the change to {change.name} in {config}",
+            done_when=(
+                f"The change to {change.name} in {config} at {when} is either "
+                "recorded as a rotation or reverted."
+            ),
+            constraints=(
+                "A new value goes in only at rotate.py's hidden prompt: never "
+                "into a chat, a ticket or a file."
+            ),
+            effort="S",
+            body="\n".join(lines),
+            labels=["person"],
+        ),
+    )
 
 
 def retired_event(event: RotationEvent, at: datetime) -> RotationEventCreate:

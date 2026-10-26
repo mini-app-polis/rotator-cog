@@ -1619,7 +1619,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "httpx", specifier = ">=0.27,<1.0" },
-    { name = "miniapppolis-common-utils", specifier = ">=6.26.0,<7" },
+    { name = "miniapppolis-common-utils", specifier = ">=6.30.0,<7" },
     { name = "pydantic", specifier = ">=2.0,<3.0" },
     { name = "pyyaml", specifier = ">=6.0,<7.0" },
     { name = "sentry-sdk", specifier = ">=2.0.0,<3.0.0" },
