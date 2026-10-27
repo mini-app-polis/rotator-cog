@@ -1,3 +1,10 @@
+# [1.11.0](https://github.com/mini-app-polis/rotator-cog/compare/v1.10.0...v1.11.0) (2026-10-27)
+
+
+### Features
+
+* **doppler:** empty a previous slot instead of deleting it, so service configs can reference it ([cc6fca5](https://github.com/mini-app-polis/rotator-cog/commit/cc6fca5a15b335bca5afe299541415ac90470898))
+
 # [1.10.0](https://github.com/mini-app-polis/rotator-cog/compare/v1.9.0...v1.10.0) (2026-10-26)
 
 
