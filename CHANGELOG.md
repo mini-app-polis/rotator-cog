@@ -1,3 +1,18 @@
+# [1.13.0](https://github.com/mini-app-polis/rotator-cog/compare/v1.12.0...v1.13.0) (2026-10-27)
+
+
+### Bug Fixes
+
+* **inventory:** drop kwalla-dance's deploy hook, which does not exist ([dfbca74](https://github.com/mini-app-polis/rotator-cog/commit/dfbca744dc41fd16e0e7378ef67721c3f48b6a22))
+* **inventory:** hold the Spotify refresh token outside the vault and narrow its write token ([795d304](https://github.com/mini-app-polis/rotator-cog/commit/795d304cedb3ba2d15a321826b76936b9c046f49))
+* **inventory:** keep the rotator's Railway tokens in its own Doppler config ([98d746b](https://github.com/mini-app-polis/rotator-cog/commit/98d746baf53083c5588de27f49cf944f41a6ea47))
+* **worker:** stop requiring an empty previous slot on Railway before a rotation ([c10c1b7](https://github.com/mini-app-polis/rotator-cog/commit/c10c1b7b49e784482c6cf55f07bf48c2675d756e))
+
+
+### Features
+
+* **worker:** rotate TURNSTILE_SECRET_KEY through Cloudflare's rotate-secret API ([9afa4f3](https://github.com/mini-app-polis/rotator-cog/commit/9afa4f3b307cabdd4d51a6637ffc0990759dc172))
+
 # [1.12.0](https://github.com/mini-app-polis/rotator-cog/compare/v1.11.0...v1.12.0) (2026-10-27)
 
 
