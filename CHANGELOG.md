@@ -1,3 +1,10 @@
+# [1.12.0](https://github.com/mini-app-polis/rotator-cog/compare/v1.11.0...v1.12.0) (2026-10-27)
+
+
+### Features
+
+* write rotations to Doppler alone and let its syncs deliver the GitHub copies ([94f4f23](https://github.com/mini-app-polis/rotator-cog/commit/94f4f2365135ebc4c1ae5551d4eeabfd9a782a61))
+
 # [1.11.0](https://github.com/mini-app-polis/rotator-cog/compare/v1.10.0...v1.11.0) (2026-10-27)
 
 
