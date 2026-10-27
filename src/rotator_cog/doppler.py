@@ -155,10 +155,6 @@ def _set(name: str, value: str, *, exists: bool) -> dict[str, Any]:
     return {"name": name, "originalName": name if exists else None, "value": value}
 
 
-def _delete(name: str) -> dict[str, Any]:
-    return {"name": name, "originalName": name, "value": None, "shouldDelete": True}
-
-
 def stage(doppler: Doppler, name: str, new: str) -> None:
     """Routine, phase 1: the new value in NAME_PREVIOUS; callers keep NAME."""
     previous = previous_name(name)
@@ -178,17 +174,35 @@ def promote(doppler: Doppler, name: str, new: str, old: str) -> None:
 
 
 def replace(doppler: Doppler, name: str, new: str) -> None:
-    """Compromised: NAME the new value and no previous slot, in one write."""
+    """Compromised: NAME the new value and an empty previous slot, in one write."""
     previous = previous_name(name)
-    changes = [_set(name, new, exists=True)]
-    if doppler.get(previous) is not None:
-        changes.append(_delete(previous))
-    doppler.change(name, changes)
+    doppler.change(
+        name,
+        [
+            _set(name, new, exists=True),
+            _set(previous, "", exists=doppler.get(previous) is not None),
+        ],
+    )
 
 
 def retire(doppler: Doppler, names: list[str]) -> None:
-    """Delete these previous slots in one write."""
-    doppler.change(", ".join(names), [_delete(previous_name(name)) for name in names])
+    """Empty these previous slots in one write.
+
+    A slot is emptied, never deleted: each service's own Doppler config
+    references NAME_PREVIOUS, and Doppler refuses a reference to a secret
+    that does not exist. An empty slot is no previous key.
+    """
+    doppler.change(
+        ", ".join(names),
+        [
+            _set(
+                previous_name(name),
+                "",
+                exists=doppler.get(previous_name(name)) is not None,
+            )
+            for name in names
+        ],
+    )
 
 
 def write(doppler: Doppler, label: str, values: dict[str, str]) -> None:

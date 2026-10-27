@@ -81,7 +81,8 @@ A daily sweep per config (14:00 UTC) does the rest:
 
 - **Retires previous keys.** Once nothing has used a previous key for 24
   hours (the API's audit trail records which key proved each request), it
-  is deleted from Doppler and the API redeployed. Because the sweep runs
+  is emptied in Doppler (never deleted: services' configs reference the
+  slot; ADR-0005) and the API redeployed. Because the sweep runs
   once a day, a previous key is retired 24 to 48 hours after its last use.
   In dev the rotator cannot read the development API's audit trail, so a
   previous key is retired a day after its rotation. At seven days a key

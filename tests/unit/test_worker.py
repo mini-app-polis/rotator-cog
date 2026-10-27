@@ -336,16 +336,16 @@ def test_a_routine_rotation_hands_over_in_two_phases() -> None:
     assert report.lines == [("updated", "rotated")]
 
 
-def test_a_compromised_rotation_is_one_write_with_no_previous_slot() -> None:
+def test_a_compromised_rotation_is_one_write_that_empties_the_previous_slot() -> None:
     fake = FakeDoppler({KEY: "old", PREV: "older"})
     report, steps = _handover(fake, "compromised", config="prd")
     new = fake.secrets[KEY]
-    assert fake.secrets == {KEY: new} and not new.startswith("dev_")
+    assert fake.secrets == {KEY: new, PREV: ""} and not new.startswith("dev_")
     assert len(fake.writes()) == 1
     assert steps[0] == (
         "redeploy",
         "prd",
-        {KEY: new},
+        {KEY: new, PREV: ""},
         {"api-kaianolevine-com": {KEY: new, PREV: None}, "db-poller": {KEY: new}},
     )
     assert steps[1] == ("verify", True)

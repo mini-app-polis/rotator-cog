@@ -20,7 +20,7 @@ Doppler's sync, while the API learns it only when it is redeployed. So the
 new value first goes to NAME_PREVIOUS and the API is redeployed, accepting
 both keys; then NAME takes the new value and NAME_PREVIOUS the old one, the
 callers switch, and the API is redeployed again. A compromised rotation is
-one write: NAME takes the new value and NAME_PREVIOUS is deleted, and the
+one write: NAME takes the new value and NAME_PREVIOUS is emptied, and the
 401s until the redeploy are the price.
 
 The worker writes new values with a Doppler token of its own, one per

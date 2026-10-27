@@ -8,8 +8,8 @@ Infra's schedule sends one ``rotation.sweep`` per config each day. A sweep:
    API's audit trail (``GET /v1/secrets/key-use``); in dev, a day after the
    rotation, since the rotator holds no key for the development API. At
    seven days a key still in use is retired anyway, and the run reports
-   which machine was still on it. Retiring deletes the previous slots in
-   Doppler, redeploys the API once Railway shows them gone, and records
+   which machine was still on it. Retiring empties the previous slots in
+   Doppler (ADR-0005), redeploys the API once Railway shows them gone, and records
    ``retired`` on each rotation event. With a daily sweep, a key is retired
    24 to 48 hours after its last use.
 2. **Rotates one due key**, the most overdue, inline, and only on a day that
