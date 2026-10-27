@@ -118,12 +118,15 @@ A daily sweep per config (14:00 UTC) does the rest:
 A Railway service holds only the names its own Doppler config references,
 so `api-kaianolevine-com` needs each `<NAME>_API_KEY_PREVIOUS` referenced
 in its config for that environment before the worker can rotate the key
-there. The worker checks before it writes anything: a rotation whose
-services are missing, or do not hold a variable it would wait for, is
-reported as "not ready to rotate; nothing was written", naming what to
-reference. A previous slot is always present in the ecosystem project,
-empty when no handover is under way (ADR-0005), so the reference can be
-added at any time.
+there. A previous slot is always present in the ecosystem project, empty
+when no handover is under way (ADR-0005), so the reference can be added at
+any time. Railway keeps no empty variable, though, so the slot only shows
+on the service while it holds a key. The worker checks before it writes
+anything that every service is there and holds the secret itself: a
+rotation that fails that is reported as "not ready to rotate; nothing was
+written". A missing previous-slot reference shows up later, when phase 1
+times out waiting for the new key to reach the API. That rotation is
+recorded as failed, with nothing written but an unused key in the slot.
 
 ## Adding a secret
 

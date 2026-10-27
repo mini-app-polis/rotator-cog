@@ -564,7 +564,7 @@ def test_a_rotation_the_services_are_not_ready_for_writes_nothing() -> None:
         return [f"api-kaianolevine-com in development does not reference {PREV}"]
 
     report, steps = _handover(fake, check=check)
-    assert asked == [("dev", {"api-kaianolevine-com": [KEY, PREV], "db-poller": [KEY]})]
+    assert asked == [("dev", {"api-kaianolevine-com": [KEY], "db-poller": [KEY]})]
     assert fake.secrets == {KEY: "old"} and fake.writes() == []
     assert steps == [] and report.lines == [NOT_READY]
 

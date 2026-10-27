@@ -438,17 +438,18 @@ def railway_checker(
 def _needs(job: RotationRequest, entry: Mapping[str, Any]) -> dict[str, list[str]]:
     """What each service must hold before the job's rotation can start.
 
-    A routine handover waits for the accepting service to hold NAME_PREVIOUS;
-    a compromised one only for it to be gone, which an unreferenced one is.
-    An AWS key's services take both of its parts.
+    Every service must hold NAME. NAME_PREVIOUS is not checked: an empty
+    slot, which is what it holds between handovers (ADR-0005), is no
+    variable at all on Railway, so its absence proves nothing. A routine
+    handover proves the slot reaches the accepting service when phase 1
+    waits for it. If the service's config does not reference it, that wait
+    times out with nothing written but an unused key in the slot, which the
+    sweep empties. An AWS key's services take both of its parts.
     """
     name = job.name
     if entry["kind"] == "aws-access-key":
         return {service: [entry["id_var"], name] for service in entry["redeploy"]}
-    previous = doppler_mod.previous_name(name)
-    accepting = [name, previous] if job.mode == "routine" else [name]
-    callers = [s for s in entry["redeploy"] if s != ACCEPTING_SERVICE]
-    return {ACCEPTING_SERVICE: accepting, **{s: [name] for s in callers}}
+    return {service: [name] for service in entry["redeploy"]}
 
 
 def _not_ready(
