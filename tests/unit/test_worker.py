@@ -26,11 +26,6 @@ INVENTORY = {
         "TICK_SECRET": {"kind": "generated", "redeploy": ["api-kaianolevine-com"]},
         "LONE_API_KEY": {"kind": "machine-key", "redeploy": ["db-poller"]},
         "OPENAI_API_KEY": {"kind": "manual"},
-        "CI_VALIDATOR_API_KEY": {
-            "kind": "machine-key",
-            "configs": ["prd", "dev"],
-            "github": ["org:mini-app-polis"],
-        },
         "MANUAL_STEP_API_KEY": {"kind": "machine-key", "steps": "paste it"},
     },
     "doppler_project": "proj",
@@ -93,7 +88,7 @@ def test_every_machine_key_the_worker_takes_names_its_machine_and_the_api() -> N
     taken = [
         n
         for n, e in inventory["secrets"].items()
-        if e["kind"] == "machine-key" and not e.get("github") and not e.get("steps")
+        if e["kind"] == "machine-key" and not e.get("steps")
     ]
     assert taken
     for n in taken:
@@ -130,7 +125,6 @@ def test_a_job_for_a_listed_worker_kind_in_a_config_it_is_held_in_passes() -> No
         (_job("TICK_SECRET"), "kind generated is not rotated by the worker"),
         # No configs means prd only.
         (_job("LONE_API_KEY", "dev"), "not held in dev"),
-        (_job("CI_VALIDATOR_API_KEY"), "also held in GitHub"),
         (_job("MANUAL_STEP_API_KEY"), "needs a manual step"),
         (_job("LONE_API_KEY"), "api-kaianolevine-com is not in its redeploy list"),
     ],
@@ -543,8 +537,8 @@ def test_the_checker_names_the_reference_to_add() -> None:
     fake = FakeRailway()
     fake.variables["s-api"] = {KEY}
     assert _checker(fake)("dev", {"api-kaianolevine-com": [KEY, PREV]}) == [
-        f"api-kaianolevine-com in development does not reference {PREV}: "
-        "set it to ${{shared." + PREV + "}}"
+        f"api-kaianolevine-com in development does not hold {PREV}: "
+        "reference it in the service's dev Doppler config"
     ]
 
 

@@ -16,8 +16,7 @@ POST /v1/secrets/rotation-events under the owner's own identity (a Clerk
 session token pasted at a hidden prompt). Neither ever holds a value.
 
 Values never pass through stdout, an argument list or a file: a minted value
-goes to Doppler (and to GitHub secrets) on stdin, a pasted value is read
-with getpass, and verify commands run under `doppler run`, so the value
+goes to Doppler on stdin, a pasted value is read with getpass, and verify commands run under `doppler run`, so the value
 reaches them as an environment variable.
 
 Routine rotation keeps the old credential alive until the new one verifies.
@@ -25,8 +24,12 @@ Routine rotation keeps the old credential alive until the new one verifies.
 or not anything has picked it up yet: an outage is the price, and overlap is
 what an attacker wants.
 
+Doppler is the only place a value is written. Everything that reads one,
+GitHub Actions included, holds a reference to it that Doppler's syncs keep
+current.
+
 Needs on PATH: doppler (logged in), and as the secrets require them aws
-(profile from AWS_PROFILE, default miniapppolis), gh and curl.
+(profile from AWS_PROFILE, default miniapppolis) and curl.
 """
 
 from __future__ import annotations
@@ -73,7 +76,6 @@ def entry(inv: dict, name: str, config: str = "prd") -> dict:
     except KeyError:
         sys.exit(f"{name} is not in {INVENTORY.relative_to(ROOT)}; add it first")
     e.setdefault("configs", ["prd"])
-    e.setdefault("github", [])
     return e
 
 
@@ -152,31 +154,6 @@ def doppler_names(project: str, config: str) -> set[str]:
     return names - {"DOPPLER_PROJECT", "DOPPLER_CONFIG", "DOPPLER_ENVIRONMENT"}
 
 
-def github_targets(e: dict, name: str, config: str) -> list[tuple[str, str]]:
-    """[(flag-args, secret-name)] for entries like 'org:x', 'repo:o/r as NAME @dev'."""
-    out = []
-    for spec in e["github"]:
-        spec_cfg = "prd"
-        if " @" in spec:
-            spec, spec_cfg = spec.rsplit(" @", 1)
-        if spec_cfg != config:
-            continue
-        gh_name = name
-        if " as " in spec:
-            spec, gh_name = spec.split(" as ", 1)
-        out.append((spec.strip(), gh_name.strip()))
-    return out
-
-
-def gh_set(target: str, gh_name: str, value: str) -> None:
-    kind, where = target.split(":", 1)
-    if kind == "org":
-        args = ["--org", where, "--visibility", "all"]
-    else:
-        args = ["--repo", where]
-    run(["gh", "secret", "set", gh_name, *args], stdin=value)
-
-
 def aws(*args: str) -> dict:
     return json.loads(
         run(["aws", "--profile", AWS_PROFILE, "--output", "json", *args]) or "{}"
@@ -242,8 +219,8 @@ def cmd_list(args, inv) -> None:
             if e["configs"]:
                 last = seen.get((name, cfg))
             else:
-                # Held outside Doppler (GitHub or Railway only): any config a
-                # rotation was recorded under counts.
+                # Held outside Doppler (by Railway, or placed by hand): any
+                # config a rotation was recorded under counts.
                 last = max(
                     (at for (n, _), at in seen.items() if n == name), default=None
                 )
@@ -343,8 +320,7 @@ def cmd_rotate(args, inv) -> int:
     print(f"{mode} rotation, Doppler {project}/{cfg}:")
     redeploy: set[str] = set()
     for n, e in sorted(chosen.items(), key=lambda kv: (kv[1]["tier"], kv[0])):
-        gh = ", ".join(f"{t} as {g}" for t, g in github_targets(e, n, cfg))
-        print(f"  t{e['tier']} {n} ({e['kind']}){'  + GitHub ' + gh if gh else ''}")
+        print(f"  t{e['tier']} {n} ({e['kind']})")
         redeploy |= set(e["redeploy"])
     if redeploy:
         print(f"  then redeploy: {', '.join(sorted(redeploy))}")
@@ -364,9 +340,6 @@ def cmd_rotate(args, inv) -> int:
             # No dots in either part: a dotless credential routes as a machine key.
             value = inv.get("key_prefix", {}).get(cfg, "") + pysecrets.token_urlsafe(32)
             doppler_set(project, cfg, n, value)
-            for target, gh_name in github_targets(e, n, cfg):
-                gh_set(target, gh_name, value)
-                print(f"   GitHub {target} {gh_name} set")
             del value
             state["stored"] = True
             if e.get("steps"):
@@ -409,16 +382,12 @@ def cmd_rotate(args, inv) -> int:
                     print(f"   old key {old} deactivated")
         elif kind == "manual":
             print(f"   mint: {e.get('steps', 'see the provider console')}")
-            if e["configs"] or github_targets(e, n, cfg):
+            if e["configs"]:
                 value = getpass.getpass(f"   paste new {n} (hidden, blank to skip): ")
                 if not value.strip():
                     print("   skipped")
                     continue
-                if e["configs"]:
-                    doppler_set(project, cfg, n, value)
-                for target, gh_name in github_targets(e, n, cfg):
-                    gh_set(target, gh_name, value)
-                    print(f"   GitHub {target} {gh_name} set")
+                doppler_set(project, cfg, n, value)
                 del value
                 state["stored"] = True
             else:

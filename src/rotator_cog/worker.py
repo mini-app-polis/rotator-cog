@@ -9,9 +9,10 @@ mini-app-polis/infra. Two kinds of message arrive on it:
 A job asks for one secret to be rotated in one Doppler config. It is checked
 against the inventory packaged with the function (secrets/inventory.yaml):
 the name must be listed, its kind must be one the worker rotates, the config
-must be one the secret is held in, and the secret must live in Doppler alone
-(an entry also held in GitHub, or with a manual step, is rotated with
-scripts/rotate.py). A job that fails the check is reported and acknowledged:
+must be one the secret is held in, and it must need no manual step (one that
+does is rotated with scripts/rotate.py). Everything else that holds the
+secret, GitHub Actions included, reads a reference to it that Doppler's syncs
+keep current, so a write to Doppler reaches it. A job that fails the check is reported and acknowledged:
 it is the producer's mistake, and sending it again would fail the same way.
 
 **Two phases for a routine rotation.** Callers on Lambda read Parameter
@@ -221,8 +222,6 @@ def validate(job: RotationRequest, inventory: Mapping[str, Any]) -> dict[str, An
         raise InvalidJob(f"kind {kind} is not rotated by the worker")
     if job.config not in entry.get("configs", ["prd"]):
         raise InvalidJob(f"not held in {job.config}")
-    if entry.get("github"):
-        raise InvalidJob("also held in GitHub: rotate it with rotate.py")
     if entry.get("steps"):
         raise InvalidJob("needs a manual step: rotate it with rotate.py")
     resolved = entries.for_config(entry, job.config)
@@ -427,8 +426,8 @@ def railway_checker(
                 continue
             held = railway.variable_names(ids[service])
             gaps.extend(
-                f"{service} in {environment} does not reference {name}: "
-                f"set it to ${{{{shared.{name}}}}}"
+                f"{service} in {environment} does not hold {name}: "
+                f"reference it in the service's {config} Doppler config"
                 for name in sorted(set(names) - held)
             )
         return gaps
