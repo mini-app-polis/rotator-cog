@@ -90,18 +90,19 @@ def test_promote_swaps_the_slots_in_one_write() -> None:
     assert len(fake.writes()) == 1
 
 
-def test_replace_sets_the_value_and_deletes_the_previous_slot_in_one_write() -> None:
+def test_replace_sets_the_value_and_empties_the_previous_slot_in_one_write() -> None:
     fake = FakeDoppler({"KEY": "old", "KEY_PREVIOUS": "older"})
     doppler.replace(fake.client(), "KEY", "new")
-    assert fake.secrets == {"KEY": "new"}
+    assert fake.secrets == {"KEY": "new", "KEY_PREVIOUS": ""}
     assert len(fake.writes()) == 1
 
 
-def test_replace_with_no_previous_slot_deletes_nothing() -> None:
+def test_replace_with_no_previous_slot_creates_it_empty() -> None:
     fake = FakeDoppler({"KEY": "old"})
     doppler.replace(fake.client(), "KEY", "new")
-    assert fake.secrets == {"KEY": "new"}
-    assert not any(c.get("shouldDelete") for c in fake.writes()[0]["change_requests"])
+    assert fake.secrets == {"KEY": "new", "KEY_PREVIOUS": ""}
+    (write,) = fake.writes()
+    assert not any(c.get("shouldDelete") for c in write["change_requests"])
 
 
 @pytest.mark.parametrize("status", [401, 403, 500])
@@ -144,11 +145,12 @@ def test_names_lists_the_config_without_reading_values() -> None:
     assert fake.requests[0].url.path == "/v3/configs/config/secrets/names"
 
 
-def test_retire_deletes_every_previous_slot_in_one_write() -> None:
+def test_retire_empties_every_previous_slot_in_one_write() -> None:
     fake = FakeDoppler({"A": "a", "A_PREVIOUS": "x", "B": "b", "B_PREVIOUS": "y"})
     doppler.retire(fake.client(), ["A", "B"])
-    assert fake.secrets == {"A": "a", "B": "b"}
-    assert len(fake.writes()) == 1
+    assert fake.secrets == {"A": "a", "A_PREVIOUS": "", "B": "b", "B_PREVIOUS": ""}
+    (write,) = fake.writes()
+    assert not any(c.get("shouldDelete") for c in write["change_requests"])
 
 
 # -- retries ---------------------------------------------------------------

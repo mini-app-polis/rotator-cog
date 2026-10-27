@@ -382,7 +382,7 @@ def test_a_run_that_retires_rotates_nothing_that_day(posted: list) -> None:
         last=NOW - dt.timedelta(days=2),
     )
     steps = _run(fake, api, posted)
-    assert "DEEJAY_COG_API_KEY_PREVIOUS" not in fake.secrets
+    assert fake.secrets["DEEJAY_COG_API_KEY_PREVIOUS"] == ""
     assert fake.secrets["WATCHER_COG_API_KEY"] == "old-w"
     (redeploy,) = [s for s in steps if s[0] == "redeploy"]
     assert redeploy[2] == {
@@ -463,7 +463,7 @@ def test_with_rotation_off_retirement_still_happens(
         last=NOW - dt.timedelta(days=2),
     )
     _run(fake, api, posted)
-    assert "DEEJAY_COG_API_KEY_PREVIOUS" not in fake.secrets
+    assert fake.secrets["DEEJAY_COG_API_KEY_PREVIOUS"] == ""
 
 
 def test_a_consumer_not_deployed_in_a_config_is_not_checked_there(

@@ -49,7 +49,7 @@ def test_a_compromised_rotation_replaces_the_key_at_once(world: World) -> None:
 
     assert worker.lambda_handler(event, Context()) == {"batchItemFailures": []}
 
-    assert set(world.secrets) == {name}
+    assert world.secrets[doppler.previous_name(name)] == ""
     assert world.secrets[name] != "old-key"
     assert world.redeployed == [f"id-{s}" for s in entry["redeploy"]]
     (recorded,) = world.recorded
