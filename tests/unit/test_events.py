@@ -83,7 +83,13 @@ def test_now_is_utc_to_the_second() -> None:
 
 
 def test_kinds_are_the_rotated_kinds() -> None:
-    assert set(events.KINDS) == {"machine-key", "generated", "aws-access-key", "manual"}
+    assert set(events.KINDS) == {
+        "machine-key",
+        "generated",
+        "aws-access-key",
+        "manual",
+        "provider-api",
+    }
 
 
 def test_describe_names_the_event_without_a_value() -> None:

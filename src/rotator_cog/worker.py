@@ -64,6 +64,16 @@ the value is minted (a write, a redeploy, the check) is recorded as failed
 and fails the job. The run report goes to the runs channel, and a failure's
 to errors as well.
 
+**A provider-api secret** is minted by its provider through the provider's
+API: TURNSTILE_SECRET_KEY, through Cloudflare's rotate-secret (turnstile.py),
+with a Cloudflare token of the rotator's own read from the Parameter Store
+path CLOUDFLARE_TURNSTILE_TOKEN_PARAMETER names, for the widget
+CLOUDFLARE_ACCOUNT_ID and TURNSTILE_SITEKEY name. Cloudflare keeps the old
+secret valid for two hours after a routine rotation, so there is no handover:
+one write, one redeploy, and the event records the old secret as retired
+when the grace period ends. A compromised rotation invalidates it at once.
+The check is siteverify, which must know the new secret.
+
 A sweep retires previous keys, rotates the most overdue key and reports
 drift, for one config (sweep.py).
 """
@@ -102,7 +112,7 @@ from mini_app_polis.pipeline_status import post_run_finding, run_report
 from mini_app_polis.sentry import init_sentry
 from pydantic import BaseModel, Field, ValidationError
 
-from . import aws_keys, entries
+from . import aws_keys, entries, turnstile
 from . import doppler as doppler_mod
 from . import railway as railway_mod
 from . import sweep as sweep_mod
@@ -120,7 +130,16 @@ MACHINE_NAME = "rotator-cog"
 #: The kinds the worker rotates. The others are rotated with scripts/rotate.py:
 #: a generated secret's check runs under the doppler CLI, which the function
 #: does not have.
-WORKER_KINDS = frozenset({"machine-key", "aws-access-key"})
+WORKER_KINDS = frozenset({"machine-key", "aws-access-key", "provider-api"})
+
+#: The providers whose API the worker mints a provider-api secret through.
+PROVIDERS = frozenset({"cloudflare-turnstile"})
+
+#: Where the Cloudflare token that rotates the Turnstile secret is, and the
+#: widget it belongs to: environment variables infra sets. None is secret.
+TURNSTILE_TOKEN_PARAMETER_VAR = "CLOUDFLARE_TURNSTILE_TOKEN_PARAMETER"
+CLOUDFLARE_ACCOUNT_VAR = "CLOUDFLARE_ACCOUNT_ID"
+TURNSTILE_SITEKEY_VAR = "TURNSTILE_SITEKEY"
 
 #: Cloudflare blocks default library user agents.
 USER_AGENT = "mini-app-polis-rotator/1"
@@ -186,6 +205,10 @@ Redeployer = Callable[[str, Mapping[str, Mapping[str, str | None]]], None]
 Verifier = Callable[[str, Mapping[str, Any], str, str], str | None]
 #: Records one rotation event with the API.
 Recorder = Callable[[RotationEventCreate], None]
+#: Asks a provider for a new secret: (invalidate the old one now) -> secret.
+ProviderMinter = Callable[[bool], str]
+#: Checks a provider-minted secret: None when it works, else why not.
+SecretVerifier = Callable[[str], str | None]
 #: Checks, before anything is written, that each service is in the config's
 #: environment and holds each variable named for it (a reference counts, even
 #: one Doppler has not filled): (config, {service: names}) -> what is missing,
@@ -229,6 +252,10 @@ def validate(job: RotationRequest, inventory: Mapping[str, Any]) -> dict[str, An
         raise InvalidJob(f"{ACCEPTING_SERVICE} is not in its redeploy list")
     if kind == "aws-access-key" and not (entry.get("iam_user") and entry.get("id_var")):
         raise InvalidJob("an AWS key entry needs iam_user and id_var")
+    if kind == "provider-api" and entry.get("provider") not in PROVIDERS:
+        raise InvalidJob(
+            f"provider {entry.get('provider')} is not one the worker mints through"
+        )
     return resolved
 
 
@@ -319,7 +346,13 @@ def _now() -> datetime:
 
 def _reason(exc: BaseException) -> str:
     """Why a rotation failed, from an error that names no value."""
-    if isinstance(exc, doppler_mod.DopplerError | railway_mod.RailwayError):
+    if isinstance(
+        exc,
+        doppler_mod.DopplerError
+        | railway_mod.RailwayError
+        | turnstile.TurnstileError
+        | TokenUnavailable,
+    ):
         return str(exc)[:500]
     return f"{type(exc).__name__} during the rotation"
 
@@ -365,6 +398,35 @@ def _secure_parameter(var: str, *, client: Any | None = None) -> str:
     if not value:
         raise TokenUnavailable(f"{name} has no value")
     return value
+
+
+def cloudflare_turnstile(
+    *,
+    token_reader: Callable[[str], str] = _secure_parameter,
+    transport: httpx.BaseTransport | None = None,
+) -> ProviderMinter:
+    """Rotate the Turnstile widget's secret, with the rotator's Cloudflare token.
+
+    The token and the widget are read when a rotation runs, so a sweep with
+    nothing to rotate never reads the token.
+    """
+
+    def mint_secret(invalidate_now: bool) -> str:
+        account = os.environ.get(CLOUDFLARE_ACCOUNT_VAR, "").strip()
+        sitekey = os.environ.get(TURNSTILE_SITEKEY_VAR, "").strip()
+        if not account or not sitekey:
+            raise turnstile.TurnstileError(
+                f"{CLOUDFLARE_ACCOUNT_VAR} and {TURNSTILE_SITEKEY_VAR} must be set"
+            )
+        return turnstile.rotate_secret(
+            account,
+            sitekey,
+            token_reader(TURNSTILE_TOKEN_PARAMETER_VAR),
+            invalidate_immediately=invalidate_now,
+            transport=transport,
+        )
+
+    return mint_secret
 
 
 def railway_redeployer(
@@ -438,17 +500,18 @@ def railway_checker(
 def _needs(job: RotationRequest, entry: Mapping[str, Any]) -> dict[str, list[str]]:
     """What each service must hold before the job's rotation can start.
 
-    A routine handover waits for the accepting service to hold NAME_PREVIOUS;
-    a compromised one only for it to be gone, which an unreferenced one is.
-    An AWS key's services take both of its parts.
+    Every service must hold NAME. NAME_PREVIOUS is not checked: an empty
+    slot, which is what it holds between handovers (ADR-0005), is no
+    variable at all on Railway, so its absence proves nothing. A routine
+    handover proves the slot reaches the accepting service when phase 1
+    waits for it. If the service's config does not reference it, that wait
+    times out with nothing written but an unused key in the slot, which the
+    sweep empties. An AWS key's services take both of its parts.
     """
     name = job.name
     if entry["kind"] == "aws-access-key":
         return {service: [entry["id_var"], name] for service in entry["redeploy"]}
-    previous = doppler_mod.previous_name(name)
-    accepting = [name, previous] if job.mode == "routine" else [name]
-    callers = [s for s in entry["redeploy"] if s != ACCEPTING_SERVICE]
-    return {ACCEPTING_SERVICE: accepting, **{s: [name] for s in callers}}
+    return {service: [name] for service in entry["redeploy"]}
 
 
 def _not_ready(
@@ -498,6 +561,8 @@ def rotate(
             iam_factory=_iam,
             aws_verify=aws_keys.sts_verifier(),
             check=railway_checker(),
+            provider_mint=cloudflare_turnstile(),
+            provider_verify=turnstile.siteverify_verifier(),
         )
 
 
@@ -518,6 +583,8 @@ def _rotate(
     iam_factory: Callable[[], Any] | None = None,
     aws_verify: AwsVerifier | None = None,
     check: Checker | None = None,
+    provider_mint: ProviderMinter | None = None,
+    provider_verify: SecretVerifier | None = None,
 ) -> None:
     """Mint the new value, hand it over in Doppler, redeploy, verify and record.
 
@@ -544,6 +611,28 @@ def _rotate(
             report=report,
             redeploy=redeploy,
             verify=aws_verify,
+            record=record,
+            now=now,
+            check=check,
+        )
+        return
+    if entry["kind"] == "provider-api":
+        if (
+            redeploy is None
+            or record is None
+            or provider_mint is None
+            or provider_verify is None
+        ):
+            report.issue("rotation not built yet", label)
+            return
+        _rotate_provider(
+            job,
+            entry,
+            doppler_factory(inventory["doppler_project"], job.config, token),
+            report=report,
+            redeploy=redeploy,
+            mint_secret=provider_mint,
+            verify=provider_verify,
             record=record,
             now=now,
             check=check,
@@ -702,6 +791,93 @@ def _rotate_aws(
         )
 
 
+def _rotate_provider(
+    job: RotationRequest,
+    entry: Mapping[str, Any],
+    store: doppler_mod.Doppler,
+    *,
+    report: Any,
+    redeploy: Redeployer,
+    mint_secret: ProviderMinter,
+    verify: SecretVerifier,
+    record: Recorder,
+    now: Callable[[], datetime],
+    check: Checker | None = None,
+) -> None:
+    """Rotate a secret its provider mints: one write, one redeploy, the check.
+
+    The provider keeps the old secret valid for its grace period after a
+    routine rotation, so the services move over in one redeploy, and the
+    event records the old secret as retired when that period ends. A
+    compromised rotation invalidates it as the new one is minted. A new
+    secret that is not stored is lost: the provider never shows it again, so
+    the failure says when the old one stops working.
+    """
+    label = f"{job.name} in {job.config}"
+    if check is not None and _not_ready(
+        check, job.config, _needs(job, entry), report=report, label=label
+    ):
+        return
+    if job.name not in store.names():
+        report.issue("not in Doppler", label)
+        return
+    compromised = job.mode == "compromised"
+    minted = now()
+    retired: datetime | None = None
+
+    def event(reason: str | None) -> RotationEventCreate:
+        return RotationEventCreate(
+            name=job.name,
+            config=job.config,
+            kind="provider-api",
+            mode=job.mode,
+            actor=MACHINE_NAME,
+            minted=minted,
+            retired=retired,
+            verification="ok" if reason is None else "failed",
+            verification_reason=reason,
+        )
+
+    try:
+        new = mint_secret(compromised)
+    except Exception as exc:
+        # Whether the provider minted one is unknown: the old secret may
+        # stop working when its grace period ends.
+        record(event(_reason(exc)))
+        report.issue(
+            "rotate-secret failed; if the provider did rotate it, the old "
+            f"secret stops working by {minted + turnstile.GRACE:%H:%M} UTC",
+            label,
+            detail=_reason(exc),
+        )
+        raise
+    retired = now() if compromised else minted + turnstile.GRACE
+    try:
+        try:
+            doppler_mod.write(store, job.name, {job.name: new})
+        except Exception:
+            report.issue(
+                "the new secret was not stored and is lost; rotate again before "
+                f"the old one stops working at {retired:%H:%M} UTC",
+                label,
+            )
+            raise
+        redeploy(
+            job.config, {service: {job.name: new} for service in entry["redeploy"]}
+        )
+        reason = verify(new)
+    except Exception as exc:
+        record(event(_reason(exc)))
+        raise
+    finally:
+        del new
+    record(event(reason))
+    if reason is None:
+        report.updated("rotated", label)
+    else:
+        report.issue("verification failed", label, detail=reason)
+
+
 def run_sweep(
     config: str,
     *,
@@ -719,6 +895,10 @@ def run_sweep(
     now: Callable[[], datetime] = _now,
     iam_factory: Callable[[], Any] = _iam,
     aws_verify: AwsVerifier | None = None,
+    provider_mint_factory: Callable[[], ProviderMinter] = cloudflare_turnstile,
+    provider_verifier_factory: Callable[[], SecretVerifier] = (
+        turnstile.siteverify_verifier
+    ),
 ) -> None:
     """Sweep one config: retire, rotate the most overdue key, ask for manual
     rotations, report drift and changes no rotation explains."""
@@ -816,6 +996,8 @@ def run_sweep(
                     now=now,
                     iam_factory=iam_factory,
                     aws_verify=aws_verify,
+                    provider_mint=provider_mint_factory(),
+                    provider_verify=provider_verifier_factory(),
                 )
                 break
 

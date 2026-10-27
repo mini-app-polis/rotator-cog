@@ -39,3 +39,10 @@ rotator's wait for Railway to show a value treats an empty one as gone.
   rotation reaches it through Doppler's sync like any other change.
 - Nothing about the handover's order, the redeploys or the retirement
   rules changes.
+- Railway keeps no variable whose value is empty, so between handovers a
+  service holds no `NAME_PREVIOUS` even though its config references the
+  slot. The worker's readiness check before a rotation therefore asks
+  only for `NAME`. Phase 1's wait for the new value to reach the
+  accepting service is what proves the slot is referenced. If it is not,
+  that wait times out, and the only thing written is an unused key in
+  the slot, which the sweep empties.

@@ -13,7 +13,7 @@ in Doppler.
   runbook.
 - [`docs/provider-assessment.md`](docs/provider-assessment.md): which
   manually minted secrets the rotator could take over, and why each stays
-  manual.
+  manual or was automated.
 - `scripts/rotate.py`: lists what is due, checks Doppler against the
   inventory, and rotates, verifies and records a secret.
 - `src/rotator_cog`: the record's client and the events rotate.py writes.
@@ -22,7 +22,7 @@ in Doppler.
 - `src/rotator_cog/worker.py`: the Lambda worker behind rotator-cog's queue
   (declared in mini-app-polis/infra). It takes `rotation.job` and
   `rotation.sweep` messages. A job is checked against the inventory packaged
-  with it: machine keys and IAM access keys, in a config the key is held
+  with it: machine keys, IAM access keys and provider-minted secrets, in a config the key is held
   in, and only keys that live in Doppler alone (the rest are rotated with
   rotate.py). An access key is created beside the old one, and the old one
   deleted once the new one has verified. A routine
@@ -32,7 +32,11 @@ in Doppler.
   value, then redeploys the services that read it with that config's
   Railway project token, reusing their last image. It then checks the key
   with `GET /v1/identity/whoami` at the config's API and records the
-  rotation as ok or failed. A daily sweep per config retires previous keys
+  rotation as ok or failed. `TURNSTILE_SECRET_KEY` (`kind: provider-api`)
+  is minted by Cloudflare's rotate-secret API instead
+  (`src/rotator_cog/turnstile.py`): Cloudflare keeps the old secret valid
+  for two hours, so it is one write and one redeploy, checked with
+  siteverify. A daily sweep per config retires previous keys
   nothing uses any more, rotates the most overdue key and reports drift
   (`src/rotator_cog/sweep.py`, and the runbook in `secrets/`). CI deploys
   the worker after each release.
@@ -57,7 +61,7 @@ what to do when a secret is compromised.
 
 Requires Python 3.11+, [uv](https://github.com/astral-sh/uv) and the
 [Doppler CLI](https://docs.doppler.com/docs/install-cli). Secrets come from
-Doppler's shared `dev` config — nothing reads a `.env` file;
+this repo's own Doppler `dev` config — nothing reads a `.env` file;
 [`.env.example`](.env.example) lists the names.
 
 ```sh

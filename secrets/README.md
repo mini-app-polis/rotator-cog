@@ -118,12 +118,15 @@ A daily sweep per config (14:00 UTC) does the rest:
 A Railway service holds only the names its own Doppler config references,
 so `api-kaianolevine-com` needs each `<NAME>_API_KEY_PREVIOUS` referenced
 in its config for that environment before the worker can rotate the key
-there. The worker checks before it writes anything: a rotation whose
-services are missing, or do not hold a variable it would wait for, is
-reported as "not ready to rotate; nothing was written", naming what to
-reference. A previous slot is always present in the ecosystem project,
-empty when no handover is under way (ADR-0005), so the reference can be
-added at any time.
+there. A previous slot is always present in the ecosystem project, empty
+when no handover is under way (ADR-0005), so the reference can be added at
+any time. Railway keeps no empty variable, though, so the slot only shows
+on the service while it holds a key. The worker checks before it writes
+anything that every service is there and holds the secret itself: a
+rotation that fails that is reported as "not ready to rotate; nothing was
+written". A missing previous-slot reference shows up later, when phase 1
+times out waiting for the new key to reach the API. That rotation is
+recorded as failed, with nothing written but an unused key in the slot.
 
 ## Adding a secret
 
@@ -150,10 +153,10 @@ Work tier by tier. Rotate each tier with
 `rotate --railway-exposed --tier N --compromised --reason "..."`, once for
 `--config prd` and once for `--config dev`.
 
-0. **Secret store and source code first.** Rotate
-   `DOPPLER_SPOTIFY_WRITE_TOKEN` before anything else. It can read the
-   Doppler config, so whoever holds it would also read every value rotated
-   after it. Revoke each GitHub token before re-minting it, then check that
+0. **Secret store and source code first.** Rotate the Doppler tokens
+   before anything else: whoever holds one reads every value in its config,
+   including the ones rotated after it. The rotator's own two tokens reach
+   the vault, so they come first. Revoke each GitHub token before re-minting it, then check that
    it is still needed at all. Re-mint the Railway tokens: Railway
    invalidated them, so the IaC applies and db-drill stay broken until
    this is done.
@@ -163,7 +166,8 @@ Work tier by tier. Rotate each tier with
    machine key.
 2. **Money and third parties.** This covers the model API keys, Asana,
    Spotify, Turnstile and the webhook secrets. Rotate the Spotify client
-   secret before the refresh token, then use the re-auth link.
+   secret and `DOPPLER_SPOTIFY_WRITE_TOKEN` (it can read the refresh token)
+   before the refresh token, then use the re-auth link.
 3. **Nuisance.** This covers the Discord webhook URLs and the Healthchecks
    ping URLs.
 
