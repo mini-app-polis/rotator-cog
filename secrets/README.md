@@ -1,9 +1,12 @@
 # Secrets
 
-Doppler is where every secret is edited. `mini-app-polis-ecosystem` /
-`prd` syncs to Railway's shared variables (production) and to Parameter
-Store (the Lambda workers); `dev` syncs to Railway's development
-environment. GitHub Actions secrets hold a few values of their own.
+Doppler is where every secret is edited, once, in
+`mini-app-polis-ecosystem` (`prd` and `dev`). Everything that reads one
+holds a reference to it in a Doppler project of its own: each Railway
+service, each Lambda worker (through Parameter Store) and each
+repository's GitHub Actions secrets and variables. A value written to the
+ecosystem project reaches all of them through Doppler's syncs, so a
+rotation writes Doppler and nothing else.
 
 - `inventory.yaml`: every credential by name. It records what each one
   can do, where it is held, how to rotate it and how to check the new
@@ -24,7 +27,7 @@ uv run scripts/rotate.py rotate --kind machine-key --reason "routine" --dry-run
 ```
 
 Prerequisites on the Mac: `doppler` (logged in), `aws` (profile
-`miniapppolis`), `gh` (logged in with `admin:org` for org secrets), `curl`.
+`miniapppolis`), `curl`.
 
 Reading or writing the record (`list`, `rotate`, `verify`, `pg-roles`) asks
 for a Clerk session token at a hidden prompt: the API
@@ -37,8 +40,8 @@ says it has expired.
 Each run:
 
 1. **Mint and store.** Machine keys and generated values are minted here
-   and piped to Doppler and to any GitHub secrets that also hold them. AWS
-   keys are minted with `aws iam create-access-key`. A console-issued value
+   and piped to Doppler. AWS keys are minted with
+   `aws iam create-access-key`. A console-issued value
    is pasted at a hidden prompt.
 2. **Redeploy.** The script lists the Railway services that read the
    secret at boot and waits until they have been redeployed. Lambda
@@ -65,7 +68,7 @@ There are two modes:
 ### Rotation by the worker
 
 The rotator's Lambda worker rotates machine keys and IAM access keys that
-live in Doppler alone (the rest stay on `rotate.py`). An access key is
+need no manual step (the rest stay on `rotate.py`). An access key is
 created beside the old one, written to Doppler with its id, checked with
 `sts get-caller-identity` once the services have redeployed, and the old
 key deleted only then; a user that already has two keys is refused for a
@@ -112,29 +115,28 @@ A daily sweep per config (14:00 UTC) does the rest:
   this process: it is in the run report, and, with `ROTATOR_SWEEP_TASKS`
   on, one task asks you to record it with `rotate.py` or revert it.
 
-In development, a service reads only the shared variables referenced on
-it in the dashboard, so `api-kaianolevine-com` there needs each
-`<NAME>_API_KEY_PREVIOUS` referenced (`${{shared.NAME_API_KEY_PREVIOUS}}`)
-before the worker can rotate that key in dev. Production's references are
-in the service's `.railway/railway.ts`. The worker checks before it writes
-anything: a rotation whose services are missing, or do not reference a
-variable it would wait for, is reported as "not ready to rotate; nothing
-was written", naming the reference to add. A reference to a shared
-variable Doppler does not hold yet is fine; it renders empty until the
-first rotation fills it.
+A Railway service holds only the names its own Doppler config references,
+so `api-kaianolevine-com` needs each `<NAME>_API_KEY_PREVIOUS` referenced
+in its config for that environment before the worker can rotate the key
+there. The worker checks before it writes anything: a rotation whose
+services are missing, or do not hold a variable it would wait for, is
+reported as "not ready to rotate; nothing was written", naming what to
+reference. A previous slot is always present in the ecosystem project,
+empty when no handover is under way (ADR-0005), so the reference can be
+added at any time.
 
 ## Adding a secret
 
 Add the secret to `inventory.yaml` in the same change that adds it to
-Doppler. `rotate.py check` exits non-zero when a secret-looking name in
-Doppler is missing from the inventory.
+Doppler's `mini-app-polis-ecosystem`. `rotate.py check` exits non-zero
+when a secret-looking name there is missing from the inventory.
 
-Doppler puts a new name into Railway's shared variables, but a service only
-reads the names it references. In production the service's
-`.railway/railway.ts` declares the reference. Development is configured in
-the dashboard, so add the reference there by hand: on the development
-service, set the variable to `${{shared.NAME}}`. Otherwise development
-starts without the value, and a machine key logs
+Then reference it from whatever reads it: a name in the reader's own
+Doppler config, `${mini-app-polis-ecosystem.<config>.NAME}`. The
+ecosystem's Terraform for Doppler (in mini-app-polis/infra) declares which
+names each reader takes. A Railway service also declares the name in its
+`.railway/railway.ts`, or the next apply removes it. Until it is
+referenced, the reader starts without the value, and a machine key logs
 `[identity] <machine> has no <NAME>; it cannot authenticate` at startup.
 
 ## Compromise runbook
