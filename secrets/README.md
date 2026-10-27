@@ -150,10 +150,10 @@ Work tier by tier. Rotate each tier with
 `rotate --railway-exposed --tier N --compromised --reason "..."`, once for
 `--config prd` and once for `--config dev`.
 
-0. **Secret store and source code first.** Rotate
-   `DOPPLER_SPOTIFY_WRITE_TOKEN` before anything else. It can read the
-   Doppler config, so whoever holds it would also read every value rotated
-   after it. Revoke each GitHub token before re-minting it, then check that
+0. **Secret store and source code first.** Rotate the Doppler tokens
+   before anything else: whoever holds one reads every value in its config,
+   including the ones rotated after it. The rotator's own two tokens reach
+   the vault, so they come first. Revoke each GitHub token before re-minting it, then check that
    it is still needed at all. Re-mint the Railway tokens: Railway
    invalidated them, so the IaC applies and db-drill stay broken until
    this is done.
@@ -163,7 +163,8 @@ Work tier by tier. Rotate each tier with
    machine key.
 2. **Money and third parties.** This covers the model API keys, Asana,
    Spotify, Turnstile and the webhook secrets. Rotate the Spotify client
-   secret before the refresh token, then use the re-auth link.
+   secret and `DOPPLER_SPOTIFY_WRITE_TOKEN` (it can read the refresh token)
+   before the refresh token, then use the re-auth link.
 3. **Nuisance.** This covers the Discord webhook URLs and the Healthchecks
    ping URLs.
 
