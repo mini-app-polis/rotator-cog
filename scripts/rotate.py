@@ -380,8 +380,12 @@ def cmd_rotate(args, inv) -> int:
                         "Inactive",
                     )
                     print(f"   old key {old} deactivated")
-        elif kind == "manual":
-            print(f"   mint: {e.get('steps', 'see the provider console')}")
+        elif kind in ("manual", "provider-api"):
+            # A provider-api secret is the worker's to rotate; by hand, it is
+            # minted in the provider's console like a manual one.
+            print(
+                f"   mint: {e.get('steps') or e.get('console', 'see the provider console')}"
+            )
             if e["configs"]:
                 value = getpass.getpass(f"   paste new {n} (hidden, blank to skip): ")
                 if not value.strip():
@@ -447,7 +451,7 @@ def cmd_rotate(args, inv) -> int:
                 )
                 print(f"{n}: old key {old} deleted")
             state["revoked"] = True
-        elif e["kind"] == "manual" and "revoked" not in state:
+        elif e["kind"] in ("manual", "provider-api") and "revoked" not in state:
             print(f"{n}: revoke the old value — {e.get('revoke', 'at the provider')}")
             state["revoked"] = confirm("   revoked?")
         elif e["kind"] in ("machine-key", "generated"):

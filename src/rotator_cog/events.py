@@ -33,7 +33,7 @@ CREATE_FIELDS = (
 )
 
 #: The kinds an event can have: the inventory's, less not-rotated.
-KINDS = ("machine-key", "generated", "aws-access-key", "manual")
+KINDS = ("machine-key", "generated", "aws-access-key", "manual", "provider-api")
 
 #: Why verification is "failed". Each is a fixed sentence: the contract
 #: bounds the reason, and nothing a check printed belongs in it.
