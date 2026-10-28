@@ -1,3 +1,10 @@
+## [1.13.1](https://github.com/mini-app-polis/rotator-cog/compare/v1.13.0...v1.13.1) (2026-10-28)
+
+
+### Bug Fixes
+
+* **doc-004:** list the sweep-tasks toggle and Turnstile rotation settings in .env.example; mark rotate_secret no-retry (PIPE-007) ([c60d6b5](https://github.com/mini-app-polis/rotator-cog/commit/c60d6b5e7d2aac8e7d5ef2d61557b9e39f0aab6d))
+
 # [1.13.0](https://github.com/mini-app-polis/rotator-cog/compare/v1.12.0...v1.13.0) (2026-10-27)
 
 
