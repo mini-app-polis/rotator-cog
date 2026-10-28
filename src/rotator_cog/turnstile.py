@@ -75,6 +75,10 @@ def rotate_secret(
     transport: httpx.BaseTransport | None = None,
 ) -> str:
     """The widget's new secret. The old one lasts GRACE unless invalidated now."""
+    # no-retry: rotate-secret is not idempotent. A request that timed out
+    # may already have rotated, and a second rotation would lose the secret
+    # the first one minted and cut short the old secret's grace while the
+    # API still holds it. A failure is recorded and fails the job instead.
     try:
         with httpx.Client(timeout=TIMEOUT_SECONDS, transport=transport) as client:
             response = client.post(
