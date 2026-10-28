@@ -1,3 +1,10 @@
+## [1.13.2](https://github.com/mini-app-polis/rotator-cog/compare/v1.13.1...v1.13.2) (2026-10-28)
+
+
+### Bug Fixes
+
+* **doc-004:** drop CLOUDFLARE_TURNSTILE_TOKEN_PARAMETER from .env.example ([3a86d47](https://github.com/mini-app-polis/rotator-cog/commit/3a86d47199c8124a656f45b35cbf9f614bde6e80))
+
 ## [1.13.1](https://github.com/mini-app-polis/rotator-cog/compare/v1.13.0...v1.13.1) (2026-10-28)
 
 
