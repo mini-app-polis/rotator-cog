@@ -1,3 +1,23 @@
+# [1.14.0](https://github.com/mini-app-polis/rotator-cog/compare/v1.13.3...v1.14.0) (2026-10-29)
+
+
+### Bug Fixes
+
+* **deps:** bump miniapppolis-common-utils to 6.34.0 ([63735db](https://github.com/mini-app-polis/rotator-cog/commit/63735dbe51f437785418e0c1a93ba1f960398443))
+* **deps:** bump miniapppolis-common-utils to 6.35.0 ([47d07cf](https://github.com/mini-app-polis/rotator-cog/commit/47d07cfafa537569049213cf131a7db8543e03e5))
+* **deps:** bump miniapppolis-common-utils to 6.36.0 ([64f2c67](https://github.com/mini-app-polis/rotator-cog/commit/64f2c676dcf8baea7200f93f551b648d9b0a9928))
+* **deps:** bump miniapppolis-common-utils to 7.1.0 ([ef1e4af](https://github.com/mini-app-polis/rotator-cog/commit/ef1e4af5add8200d0dd2aa44c48c36e0c780d382))
+* **deps:** move to common-python-utils 7.x ([1033242](https://github.com/mini-app-polis/rotator-cog/commit/10332423f3c54363fd956eb7f4b377ae78dee9f7))
+* **test:** split a made-up live-key string so the secret scan passes ([e3ce65f](https://github.com/mini-app-polis/rotator-cog/commit/e3ce65f7c0507a9236010945ea559b157ac83556))
+
+
+### Features
+
+* **incident:** expand a rotation.incident into compromised jobs and person tasks, in tier order ([493e5e8](https://github.com/mini-app-polis/rotator-cog/commit/493e5e8dd2ada443660d623f5865b1ad67720911))
+* **incident:** rotate an incident's jobs compromised, record the incident, and hand a failed one to a person ([bf52afc](https://github.com/mini-app-polis/rotator-cog/commit/bf52afcaf6fc10d351af92c70c805629469e20bb))
+* **sweep:** cap the manual-rotation tasks one sweep asks for, most overdue first ([985552e](https://github.com/mini-app-polis/rotator-cog/commit/985552e05d3351823b3c8463e9557fcd1c9e9dc2))
+* **sweep:** report retired keys and Doppler changes in sections of their own ([b5a5ec4](https://github.com/mini-app-polis/rotator-cog/commit/b5a5ec4ba12b342c96871fa4f960ea9e969110fa))
+
 ## [1.13.3](https://github.com/mini-app-polis/rotator-cog/compare/v1.13.2...v1.13.3) (2026-10-28)
 
 
