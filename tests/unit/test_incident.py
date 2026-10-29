@@ -246,12 +246,16 @@ def test_it_registers_then_queues_compromised_jobs_and_opens_tasks_in_order(
     assert report["incident"] == INCIDENT
     assert (report["queued"], report["tasks"], report["failed"]) == (3, 6, 0)
     text = report["text"]
-    assert text.splitlines()[1].startswith(f"+ incident {INCIDENT}: ")
+    assert text.split("\n\n")[1].startswith(f"incident {INCIDENT}: ")
     assert (
-        f"incident {INCIDENT}: rotation queued: DEEJAY_COG_API_KEY in prd, "
-        "DEV_ONLY_API_KEY in dev, DEEJAY_COG_API_KEY in dev"
+        f"incident {INCIDENT}: rotation queued\n"
+        "  + DEEJAY_COG_API_KEY in prd\n"
+        "  + DEV_ONLY_API_KEY in dev\n"
+        "  + DEEJAY_COG_API_KEY in dev"
     ) in text
-    assert f"incident {INCIDENT}: task opened: GITHUB_DASHBOARD_TOKEN in prd" in text
+    assert (
+        f"incident {INCIDENT}: task opened\n  + GITHUB_DASHBOARD_TOKEN in prd" in text
+    )
 
 
 def test_repeating_the_incident_sends_and_asks_nothing_twice(posted: list) -> None:

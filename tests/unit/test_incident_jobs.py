@@ -142,7 +142,7 @@ def test_an_incident_job_is_rotated_compromised_whatever_it_says(
     assert event.verification == "ok"
     kwargs = posted[0][1]
     assert kwargs["incident"] == INCIDENT
-    assert f"incident {INCIDENT}: rotated: {KEY} in prd" in _text(posted)
+    assert f"incident {INCIDENT}: rotated\n  ~ {KEY} in prd" in _text(posted)
     assert world.api.tasks == []
 
 
@@ -183,8 +183,8 @@ def test_a_failed_incident_job_is_recorded_handed_to_a_person_and_acknowledged(
     assert world.api.task_requested == {("TIER0_API_KEY", "prd")}
     text = _text(posted)
     assert str(posted[0][0][1]).endswith("WARN")
-    assert f"incident {INCIDENT}: rotation failed: TIER0_API_KEY in prd" in text
-    assert f"incident {INCIDENT}: task opened: TIER0_API_KEY in prd" in text
+    assert f"incident {INCIDENT}: rotation failed\n  TIER0_API_KEY in prd" in text
+    assert f"incident {INCIDENT}: task opened\n  + TIER0_API_KEY in prd" in text
 
 
 def test_a_rejected_incident_job_is_handed_to_a_person(posted: list) -> None:
