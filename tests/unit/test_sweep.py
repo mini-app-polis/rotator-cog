@@ -7,6 +7,7 @@ from typing import Any
 
 import httpx
 import pytest
+from mini_app_polis import pipeline_status
 from mini_app_polis.api.contract import RotationEvent, SecretChange
 from test_doppler import FakeDoppler
 
@@ -1037,3 +1038,99 @@ def test_changes_that_cannot_be_read_are_reported_and_the_sweep_goes_on(
     ((args, kwargs),) = posted
     assert "secret changes not read" in kwargs["text"]
     assert "NEW_TOKEN" in kwargs["text"]
+
+
+# ── the report's sections ────────────────────────────────────────────────
+
+
+def _rendered(kwargs: dict) -> str:
+    """The report as it is posted: its text, then its counter sections."""
+    reserved = {
+        "text",
+        "repo",
+        "production_only",
+        "source",
+        "suggestion",
+        "notable",
+        "run_id",
+        "version",
+        "counter_labels",
+        "counter_sections",
+    }
+    extras = {k: v for k, v in kwargs.items() if k not in reserved}
+    return pipeline_status._merge_extras_into_text(
+        kwargs["text"], extras, kwargs["counter_labels"], kwargs["counter_sections"]
+    )
+
+
+def test_retired_keys_are_listed_one_a_line_under_their_section(
+    posted: list,
+) -> None:
+    fake = FakeDoppler(
+        {"DEEJAY_COG_API_KEY": "new-d", "DEEJAY_COG_API_KEY_PREVIOUS": "old-d"}
+    )
+    api = FakeApi(
+        [_event("DEEJAY_COG_API_KEY", age=dt.timedelta(days=2))],
+        last=NOW - dt.timedelta(days=2),
+    )
+    _run(fake, api, posted)
+    ((_, kwargs),) = posted
+    text = _rendered(kwargs)
+    assert f"{worker.RETIRED}\n  - DEEJAY_COG_API_KEY in prd" in text
+    assert "previous key:" not in text
+    assert "old-d" not in text and "new-d" not in text
+
+
+def test_a_forced_retirement_has_its_own_section(posted: list) -> None:
+    fake = FakeDoppler(
+        {"DEEJAY_COG_API_KEY": "new-d", "DEEJAY_COG_API_KEY_PREVIOUS": "old-d"}
+    )
+    api = FakeApi(
+        [_event("DEEJAY_COG_API_KEY", age=dt.timedelta(days=8))],
+        last=NOW - dt.timedelta(hours=2),
+    )
+    _run(fake, api, posted)
+    text = _rendered(posted[0][1])
+    assert f"{worker.RETIRED_FORCED}\n  - DEEJAY_COG_API_KEY in prd" in text
+    assert worker.RETIRED + "\n" not in text
+
+
+def test_doppler_changes_all_explained_are_one_line(posted: list) -> None:
+    fake = FakeDoppler({"DEEJAY_COG_API_KEY": "d", "WATCHER_COG_API_KEY": "w"})
+    latest = [
+        _event("DEEJAY_COG_API_KEY", age=dt.timedelta(days=5), retired=NOW),
+        _event("WATCHER_COG_API_KEY", age=dt.timedelta(days=5), retired=NOW),
+    ]
+    explained = _change("WATCHER_COG_API_KEY")
+    api = FakeApi(
+        latest,
+        reported=[explained],
+        all_events=[
+            *latest,
+            _minted(
+                "WATCHER_COG_API_KEY", explained.changed_at - dt.timedelta(minutes=20)
+            ),
+        ],
+    )
+    _run(fake, api, posted)
+    ((_, kwargs),) = posted
+    text = _rendered(kwargs)
+    assert "Doppler changes\n  1 in the last day, all explained by rotations" in text
+    assert "changes=" not in text
+    assert kwargs["changes"] == 1
+
+
+def test_unexplained_doppler_changes_are_counted_and_named(posted: list) -> None:
+    fake = FakeDoppler({"DEEJAY_COG_API_KEY": "d", "WATCHER_COG_API_KEY": "w"})
+    latest = [
+        _event("DEEJAY_COG_API_KEY", age=dt.timedelta(days=5), retired=NOW),
+        _event("WATCHER_COG_API_KEY", age=dt.timedelta(days=5), retired=NOW),
+    ]
+    api = FakeApi(
+        latest, reported=[_change("DEEJAY_COG_API_KEY"), _change("WATCHER_COG_API_KEY")]
+    )
+    _run(fake, api, posted)
+    text = _rendered(posted[0][1])
+    assert "Doppler changes\n  2 in the last day\n" in text
+    assert "  2 not explained by a rotation (named above)" in text
+    assert "changed outside a rotation\n  DEEJAY_COG_API_KEY in prd" in text

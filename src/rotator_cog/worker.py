@@ -193,6 +193,12 @@ SWEEP_TASKS_VAR = "ROTATOR_SWEEP_TASKS"
 #: ``sweep.TASK_LIMIT_DEFAULT``.
 SWEEP_TASK_LIMIT_VAR = "ROTATOR_SWEEP_TASK_LIMIT"
 
+#: The sweep report's sections: the old keys it retired, and the Doppler
+#: changes it judged. Names only, never a value.
+RETIRED = "Retired old keys (no longer in use)"
+RETIRED_FORCED = "Retired old keys (still in use after the longest overlap)"
+DOPPLER_CHANGES = "Doppler changes"
+
 #: How long Railway may take to show a value Doppler has written, and a
 #: redeploy to be running. Each phase waits for both, so the function's
 #: timeout in mini-app-polis/infra covers two of each.
@@ -1103,7 +1109,10 @@ def run_sweep(
             retired_at = now()
             for r in ready:
                 record(sweep_mod.retired_event(r.event, retired_at))
-                report.removed("previous key", f"{r.event.name} in {config}")
+                report.removed(
+                    RETIRED_FORCED if r.forced else RETIRED,
+                    f"{r.event.name} in {config}",
+                )
                 if r.forced:
                     report.issue(
                         "previous key retired while still in use",
@@ -1216,8 +1225,24 @@ def run_sweep(
         except Exception as exc:  # noqa: BLE001 — the rest of the sweep still counts
             report.issue("secret changes not read", config, detail=str(exc)[:500])
         else:
-            report.count("changes", len(changes))
-            for change in sweep_mod.unexplained(changes, events, inventory):
+            odd = sweep_mod.unexplained(changes, events, inventory)
+            report.count(
+                "changes",
+                len(changes),
+                label=(
+                    "{} in the last day"
+                    if odd
+                    else "{} in the last day, all explained by rotations"
+                ),
+                section=DOPPLER_CHANGES,
+            )
+            report.count(
+                "changes_unexplained",
+                len(odd),
+                label="{} not explained by a rotation (named above)",
+                section=DOPPLER_CHANGES,
+            )
+            for change in odd:
                 label = f"{change.name} in {config}"
                 report.issue("changed outside a rotation", label)
                 if not asking:
