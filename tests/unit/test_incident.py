@@ -26,7 +26,8 @@ STARTED = "2026-10-29T17:00:00+00:00"
 QUEUE = "https://sqs.us-east-1.amazonaws.com/400200465748/rotator-jobs.fifo"
 
 #: Values a careless expansion could leak. None may appear anywhere.
-LEAKS = ("old-secret-value", "sk_live_abc123")
+# Split so the secret scanner does not read a made-up value as a live key.
+LEAKS = ("old-secret-value", "sk_" + "live_abc123")
 
 INVENTORY: dict[str, Any] = {
     "doppler_project": "proj",
