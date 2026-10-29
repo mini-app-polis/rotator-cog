@@ -7,6 +7,7 @@ from typing import Any
 
 import httpx
 import pytest
+from mini_app_polis import pipeline_status
 from mini_app_polis.api.contract import RotationEvent, SecretChange
 from test_doppler import FakeDoppler
 
@@ -696,6 +697,168 @@ def test_a_refused_task_request_is_reported_and_the_sweep_goes_on(
     assert "NEW_TOKEN" in kwargs["text"]  # drift still reported after it
 
 
+# -- the limit on manual-rotation tasks per run ----------------------------
+
+#: Six manual secrets: two never rotated (tiers 2 and 0), one whose latest
+#: rotation failed, and three past their cadence, two of them on the same
+#: day in different tiers. One untiered.
+CAPPED = {
+    **INVENTORY,
+    "secrets": {
+        "DEEJAY_COG_API_KEY": INVENTORY["secrets"]["DEEJAY_COG_API_KEY"],
+        "WATCHER_COG_API_KEY": INVENTORY["secrets"]["WATCHER_COG_API_KEY"],
+        "A_NEVER_TIER2": {"kind": "manual", "tier": 2},
+        "Z_NEVER_TIER0": {"kind": "manual", "tier": 0},
+        "FAILED_RECENT": {"kind": "manual", "tier": 0},
+        "OLD_TIER1": {"kind": "manual", "tier": 1},
+        "OLDER_TIER1": {"kind": "manual", "tier": 1},
+        "OLDER_UNTIERED": {"kind": "manual"},
+    },
+}
+
+
+def _capped_api() -> FakeApi:
+    return FakeApi(
+        [
+            _event("DEEJAY_COG_API_KEY", age=dt.timedelta(days=5), retired=NOW),
+            _event("WATCHER_COG_API_KEY", age=dt.timedelta(days=5), retired=NOW),
+            _manual_event("FAILED_RECENT", age_days=5, verification="failed"),
+            _manual_event("OLD_TIER1", age_days=400),
+            _manual_event("OLDER_TIER1", age_days=500),
+            _manual_event("OLDER_UNTIERED", age_days=500),
+        ]
+    )
+
+
+def _asked_names(api: FakeApi) -> list[str]:
+    return [r.external_id.split(".")[2] for r in api.asked]
+
+
+def test_due_secrets_come_most_overdue_then_lowest_tier_then_by_name() -> None:
+    latest = {e.name: e for e in _capped_api().events_ if e.name in CAPPED["secrets"]}
+    due = sweep.manual_due(CAPPED, latest, "prd", now=NOW)
+    assert [d.name for d in sweep.most_overdue_first(due)] == [
+        "Z_NEVER_TIER0",
+        "A_NEVER_TIER2",
+        "OLDER_TIER1",
+        "OLDER_UNTIERED",
+        "OLD_TIER1",
+        "FAILED_RECENT",
+    ]
+
+
+def test_a_due_secret_carries_its_latest_rotation_and_tier() -> None:
+    latest = {"OLD_TIER1": _manual_event("OLD_TIER1", age_days=400)}
+    due = {d.name: d for d in sweep.manual_due(CAPPED, latest, "prd", now=NOW)}
+    assert due["OLD_TIER1"].last == NOW - dt.timedelta(days=400)
+    assert due["OLD_TIER1"].tier == 1
+    assert due["A_NEVER_TIER2"].last is None
+    assert due["OLDER_UNTIERED"].tier == 3
+
+
+@pytest.mark.parametrize(
+    ("raw", "limit"),
+    [
+        (None, 3),
+        ("", 3),
+        ("  ", 3),
+        ("five", 3),
+        ("0", 3),
+        ("-2", 3),
+        ("1.5", 3),
+        ("1", 1),
+        (" 5 ", 5),
+    ],
+)
+def test_the_task_limit_defaults_to_three_unless_a_whole_number_of_at_least_one(
+    raw: str | None, limit: int
+) -> None:
+    assert sweep.task_limit(raw) == limit
+    assert sweep.TASK_LIMIT_DEFAULT == 3
+
+
+def test_a_sweep_asks_for_at_most_the_limit_and_reports_the_rest(
+    posted: list, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(worker.SWEEP_TASKS_VAR, "true")
+    monkeypatch.delenv(worker.SWEEP_TASK_LIMIT_VAR, raising=False)
+    api = _capped_api()
+    _run(
+        FakeDoppler({"DEEJAY_COG_API_KEY": "d", "WATCHER_COG_API_KEY": "w"}),
+        api,
+        posted,
+        inventory=CAPPED,
+    )
+    assert _asked_names(api) == ["Z_NEVER_TIER0", "A_NEVER_TIER2", "OLDER_TIER1"]
+    ((args, kwargs),) = posted
+    text = kwargs["text"]
+    assert "task not yet asked" in text
+    assert "OLDER_UNTIERED, OLD_TIER1, FAILED_RECENT in prd" in text
+
+
+def test_the_limit_comes_from_the_setting(
+    posted: list, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(worker.SWEEP_TASKS_VAR, "true")
+    monkeypatch.setenv(worker.SWEEP_TASK_LIMIT_VAR, "1")
+    api = _capped_api()
+    _run(
+        FakeDoppler({"DEEJAY_COG_API_KEY": "d", "WATCHER_COG_API_KEY": "w"}),
+        api,
+        posted,
+        inventory=CAPPED,
+    )
+    assert _asked_names(api) == ["Z_NEVER_TIER0"]
+
+
+def test_with_fewer_due_than_the_limit_every_one_is_asked_and_none_held_back(
+    posted: list, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(worker.SWEEP_TASKS_VAR, "true")
+    monkeypatch.setenv(worker.SWEEP_TASK_LIMIT_VAR, "10")
+    api = _capped_api()
+    _run(
+        FakeDoppler({"DEEJAY_COG_API_KEY": "d", "WATCHER_COG_API_KEY": "w"}),
+        api,
+        posted,
+        inventory=CAPPED,
+    )
+    assert len(api.asked) == 6
+    ((args, kwargs),) = posted
+    assert "task not yet asked" not in kwargs["text"]
+
+
+def test_a_second_run_with_nothing_rotated_asks_for_the_same_tasks(
+    posted: list, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(worker.SWEEP_TASKS_VAR, "true")
+    monkeypatch.delenv(worker.SWEEP_TASK_LIMIT_VAR, raising=False)
+    first, second = _capped_api(), _capped_api()
+    fake = FakeDoppler({"DEEJAY_COG_API_KEY": "d", "WATCHER_COG_API_KEY": "w"})
+    _run(fake, first, posted, inventory=CAPPED)
+    _run(fake, second, posted, inventory=CAPPED)
+    assert [r.external_id for r in second.asked] == [r.external_id for r in first.asked]
+
+
+def test_with_tasks_off_the_limit_holds_nothing_back_from_the_report(
+    posted: list, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(worker.SWEEP_TASKS_VAR, raising=False)
+    monkeypatch.setenv(worker.SWEEP_TASK_LIMIT_VAR, "1")
+    api = _capped_api()
+    _run(
+        FakeDoppler({"DEEJAY_COG_API_KEY": "d", "WATCHER_COG_API_KEY": "w"}),
+        api,
+        posted,
+        inventory=CAPPED,
+    )
+    assert api.asked == []
+    ((args, kwargs),) = posted
+    text = kwargs["text"]
+    assert "task not yet asked" not in text
+    assert "6 manual secret due, no task asked" in text
+
+
 # ── changes Doppler reported ─────────────────────────────────────────────
 
 CHANGE_INVENTORY = {
@@ -875,3 +1038,99 @@ def test_changes_that_cannot_be_read_are_reported_and_the_sweep_goes_on(
     ((args, kwargs),) = posted
     assert "secret changes not read" in kwargs["text"]
     assert "NEW_TOKEN" in kwargs["text"]
+
+
+# ── the report's sections ────────────────────────────────────────────────
+
+
+def _rendered(kwargs: dict) -> str:
+    """The report as it is posted: its text, then its counter sections."""
+    reserved = {
+        "text",
+        "repo",
+        "production_only",
+        "source",
+        "suggestion",
+        "notable",
+        "run_id",
+        "version",
+        "counter_labels",
+        "counter_sections",
+    }
+    extras = {k: v for k, v in kwargs.items() if k not in reserved}
+    return pipeline_status._merge_extras_into_text(
+        kwargs["text"], extras, kwargs["counter_labels"], kwargs["counter_sections"]
+    )
+
+
+def test_retired_keys_are_listed_one_a_line_under_their_section(
+    posted: list,
+) -> None:
+    fake = FakeDoppler(
+        {"DEEJAY_COG_API_KEY": "new-d", "DEEJAY_COG_API_KEY_PREVIOUS": "old-d"}
+    )
+    api = FakeApi(
+        [_event("DEEJAY_COG_API_KEY", age=dt.timedelta(days=2))],
+        last=NOW - dt.timedelta(days=2),
+    )
+    _run(fake, api, posted)
+    ((_, kwargs),) = posted
+    text = _rendered(kwargs)
+    assert f"{worker.RETIRED}\n  - DEEJAY_COG_API_KEY in prd" in text
+    assert "previous key:" not in text
+    assert "old-d" not in text and "new-d" not in text
+
+
+def test_a_forced_retirement_has_its_own_section(posted: list) -> None:
+    fake = FakeDoppler(
+        {"DEEJAY_COG_API_KEY": "new-d", "DEEJAY_COG_API_KEY_PREVIOUS": "old-d"}
+    )
+    api = FakeApi(
+        [_event("DEEJAY_COG_API_KEY", age=dt.timedelta(days=8))],
+        last=NOW - dt.timedelta(hours=2),
+    )
+    _run(fake, api, posted)
+    text = _rendered(posted[0][1])
+    assert f"{worker.RETIRED_FORCED}\n  - DEEJAY_COG_API_KEY in prd" in text
+    assert worker.RETIRED + "\n" not in text
+
+
+def test_doppler_changes_all_explained_are_one_line(posted: list) -> None:
+    fake = FakeDoppler({"DEEJAY_COG_API_KEY": "d", "WATCHER_COG_API_KEY": "w"})
+    latest = [
+        _event("DEEJAY_COG_API_KEY", age=dt.timedelta(days=5), retired=NOW),
+        _event("WATCHER_COG_API_KEY", age=dt.timedelta(days=5), retired=NOW),
+    ]
+    explained = _change("WATCHER_COG_API_KEY")
+    api = FakeApi(
+        latest,
+        reported=[explained],
+        all_events=[
+            *latest,
+            _minted(
+                "WATCHER_COG_API_KEY", explained.changed_at - dt.timedelta(minutes=20)
+            ),
+        ],
+    )
+    _run(fake, api, posted)
+    ((_, kwargs),) = posted
+    text = _rendered(kwargs)
+    assert "Doppler changes\n  1 in the last day, all explained by rotations" in text
+    assert "changes=" not in text
+    assert kwargs["changes"] == 1
+
+
+def test_unexplained_doppler_changes_are_counted_and_named(posted: list) -> None:
+    fake = FakeDoppler({"DEEJAY_COG_API_KEY": "d", "WATCHER_COG_API_KEY": "w"})
+    latest = [
+        _event("DEEJAY_COG_API_KEY", age=dt.timedelta(days=5), retired=NOW),
+        _event("WATCHER_COG_API_KEY", age=dt.timedelta(days=5), retired=NOW),
+    ]
+    api = FakeApi(
+        latest, reported=[_change("DEEJAY_COG_API_KEY"), _change("WATCHER_COG_API_KEY")]
+    )
+    _run(fake, api, posted)
+    text = _rendered(posted[0][1])
+    assert "Doppler changes\n  2 in the last day\n" in text
+    assert "  2 not explained by a rotation (named above)" in text
+    assert "changed outside a rotation\n  DEEJAY_COG_API_KEY in prd" in text

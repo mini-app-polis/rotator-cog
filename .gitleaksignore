@@ -6,3 +6,7 @@
 # rewrote; infra's own .gitleaksignore lists it under its original id.
 e8e83abfe72c165eda9bac1e440326c7419782e7:secrets/rotations.jsonl:aws-access-token:74
 e8e83abfe72c165eda9bac1e440326c7419782e7:secrets/rotations.jsonl:aws-access-token:75
+#
+# A made-up Stripe-shaped value in a test's list of strings that must never
+# leak; the test now splits it, as the others do.
+493e5e8dd2ada443660d623f5865b1ad67720911:tests/unit/test_incident.py:generic-api-key:29

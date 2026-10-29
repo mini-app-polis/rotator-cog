@@ -3,8 +3,9 @@
 rotator-cog runs on Lambda behind its own FIFO queue, declared in
 mini-app-polis/infra. Two kinds of message arrive on it:
 
-    {"type": "rotation.job",   "version": 1, "payload": <RotationRequest>}
-    {"type": "rotation.sweep", "version": 1, "payload": {"config": "prd"}}
+    {"type": "rotation.job",      "version": 1, "payload": <RotationRequest>}
+    {"type": "rotation.sweep",    "version": 1, "payload": {"config": "prd"}}
+    {"type": "rotation.incident", "version": 1, "payload": {"incident_id": ...}}
 
 A job asks for one secret to be rotated in one Doppler config. It is checked
 against the inventory packaged with the function (secrets/inventory.yaml):
@@ -76,6 +77,11 @@ The check is siteverify, which must know the new secret.
 
 A sweep retires previous keys, rotates the most overdue key and reports
 drift, for one config (sweep.py).
+
+An incident is expanded into a compromised job per secret the worker
+rotates, sent to this cog's own queue (ROTATOR_JOBS_QUEUE_URL, set by
+infra) in its one message group, and a board task per secret a person
+rotates (incident.py).
 """
 
 from __future__ import annotations
@@ -97,6 +103,7 @@ from mini_app_polis import logger as logger_mod
 from mini_app_polis.api import KaianoApiClient
 from mini_app_polis.api.contract import (
     RotationEventCreate,
+    RotationIncidentMessage,
     RotationJobMessage,
     RotationRequest,
     RotationSweepMessage,
@@ -114,6 +121,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from . import aws_keys, entries, turnstile
 from . import doppler as doppler_mod
+from . import incident as incident_mod
 from . import railway as railway_mod
 from . import sweep as sweep_mod
 from ._version import __version__
@@ -123,6 +131,15 @@ log = logger_mod.get_logger()
 REPO = "rotator-cog"
 FLOW_NAME = "rotate-secret"
 SWEEP_FLOW_NAME = "rotation-sweep"
+INCIDENT_FLOW_NAME = "rotation-incident"
+
+#: The environment variable naming this cog's own jobs queue (infra's
+#: own_queue_url_variable): an incident's jobs are sent there.
+JOBS_QUEUE_URL_VAR = "ROTATOR_JOBS_QUEUE_URL"
+
+#: The message group the API sends rotation jobs in. One group keeps the
+#: queue serial, so an incident's jobs run in the order they were sent.
+MESSAGE_GROUP = "rotator"
 
 #: This cog's name to the API, which picks its key; also the actor recorded.
 MACHINE_NAME = "rotator-cog"
@@ -170,6 +187,17 @@ SWEEP_ROTATE_VAR = "ROTATOR_SWEEP_ROTATE"
 #: The sweep asks for a task per due manual secret only when this is
 #: "true". Unset, it reports which are due, so the first ask can be checked.
 SWEEP_TASKS_VAR = "ROTATOR_SWEEP_TASKS"
+
+#: The most manual-rotation tasks one sweep asks for, most overdue first.
+#: Unset or not a whole number of at least 1, it is
+#: ``sweep.TASK_LIMIT_DEFAULT``.
+SWEEP_TASK_LIMIT_VAR = "ROTATOR_SWEEP_TASK_LIMIT"
+
+#: The sweep report's sections: the old keys it retired, and the Doppler
+#: changes it judged. Names only, never a value.
+RETIRED = "Retired old keys (no longer in use)"
+RETIRED_FORCED = "Retired old keys (still in use after the longest overlap)"
+DOPPLER_CHANGES = "Doppler changes"
 
 #: How long Railway may take to show a value Doppler has written, and a
 #: redeploy to be running. Each phase waits for both, so the function's
@@ -262,9 +290,46 @@ def validate(job: RotationRequest, inventory: Mapping[str, Any]) -> dict[str, An
 #: Checks a new AWS key: (user, key id, secret) -> None, or why not.
 AwsVerifier = Callable[[str, str, str], str | None]
 
+#: Puts one rotation job on this cog's own queue; raises on failure.
+JobSender = Callable[[RotationRequest], None]
+
 
 def _iam() -> Any:
     return importlib.import_module("boto3").client("iam")
+
+
+def queue_sender(*, client: Any | None = None) -> JobSender:
+    """Send jobs to this cog's own queue, in its one message group.
+
+    The queue deduplicates on content, so the same job sent twice within
+    five minutes is one message.
+    """
+    url = os.environ.get(JOBS_QUEUE_URL_VAR, "").strip()
+    if not url:
+        raise RuntimeError(f"{JOBS_QUEUE_URL_VAR} is not set: infra sets it")
+    sqs = client or importlib.import_module("boto3").client("sqs")
+
+    def send(job: RotationRequest) -> None:
+        sqs.send_message(
+            QueueUrl=url,
+            MessageBody=RotationJobMessage(payload=job).model_dump_json(),
+            MessageGroupId=MESSAGE_GROUP,
+        )
+
+    return send
+
+
+def worker_rotates(inventory: Mapping[str, Any]) -> Callable[[str, str], bool]:
+    """Whether the worker would accept a job for (name, config)."""
+
+    def rotates(name: str, config: str) -> bool:
+        try:
+            validate(sweep_mod.request_for(name, config), inventory)
+        except InvalidJob:
+            return False
+        return True
+
+    return rotates
 
 
 def machine_name(var: str) -> str:
@@ -532,38 +597,142 @@ def _not_ready(
     return bool(gaps)
 
 
+class _IncidentReport:
+    """A run report whose every line names the incident first."""
+
+    def __init__(self, report: Any, incident_id: str) -> None:
+        self._report = report
+        self._prefix = f"incident {incident_id}: "
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._report, name)
+
+    def note(self, reason: str, item: str | None = None) -> None:
+        self._report.note(self._prefix + reason, item)
+
+    def notice(self, reason: str, item: str | None = None) -> None:
+        self._report.notice(self._prefix + reason, item)
+
+    def issue(
+        self, reason: str, item: str | None = None, *, detail: str | None = None
+    ) -> None:
+        self._report.issue(self._prefix + reason, item, detail=detail)
+
+    def created(self, kind: str, item: str | None = None, **kw: Any) -> None:
+        self._report.created(self._prefix + kind, item, **kw)
+
+    def updated(self, kind: str, item: str | None = None, **kw: Any) -> None:
+        self._report.updated(self._prefix + kind, item, **kw)
+
+    def removed(self, kind: str, item: str | None = None, **kw: Any) -> None:
+        self._report.removed(self._prefix + kind, item, **kw)
+
+
 def rotate(
     job: RotationRequest,
     *,
     run_id: str,
     inventory_loader: Callable[[], Mapping[str, Any]] = load_inventory,
     token_reader: Callable[[str], str] = doppler_token,
+    rotator: Callable[..., None] | None = None,
+    incident_api_factory: Callable[[str], incident_mod.IncidentApi] | None = None,
 ) -> None:
-    """Check one job and rotate its secret. Never redelivered."""
+    """Check one job and rotate its secret. Never redelivered.
+
+    A job that carries an incident id is rotated compromised whatever its
+    mode says, and its event records the incident. When it fails, however
+    it fails, the failure is recorded and reported, a person gets a task
+    to rotate the secret (incident_task_for, keyed on the incident, so a
+    repeat makes no second task) and the entry is marked with the API.
+    The job is then acknowledged rather than dead-lettered: the jobs queued
+    behind it in the incident still run.
+    """
+    incident_id = job.incident_id
+    if incident_id is not None and job.mode != "compromised":
+        job = job.model_copy(update={"mode": "compromised"})
     label = f"{job.name} in {job.config}"
-    with run_report(FLOW_NAME, repo=REPO, run_id=run_id, version=__version__) as report:
+    rotator = rotator or _rotate
+    with run_report(FLOW_NAME, repo=REPO, run_id=run_id, version=__version__) as raw:
+        report: Any = raw
+        if incident_id is not None:
+            raw.count("incident", incident_id)
+            report = _IncidentReport(raw, incident_id)
         inventory = inventory_loader()
         try:
-            entry = validate(job, inventory)
-        except InvalidJob as exc:
-            report.issue("rotation job rejected", label, detail=str(exc))
-            return
-        token = token_reader(job.config)
-        _rotate(
-            job,
-            entry,
-            token,
-            inventory=inventory,
-            report=report,
-            redeploy=railway_redeployer(),
-            verify=machine_verifier(inventory),
-            record=api_recorder(),
-            iam_factory=_iam,
-            aws_verify=aws_keys.sts_verifier(),
-            check=railway_checker(),
-            provider_mint=cloudflare_turnstile(),
-            provider_verify=turnstile.siteverify_verifier(),
+            try:
+                entry = validate(job, inventory)
+            except InvalidJob as exc:
+                report.issue("rotation job rejected", label, detail=str(exc))
+                return
+            token = token_reader(job.config)
+            rotator(
+                job,
+                entry,
+                token,
+                inventory=inventory,
+                report=report,
+                redeploy=railway_redeployer(),
+                verify=machine_verifier(inventory),
+                record=api_recorder(),
+                iam_factory=_iam,
+                aws_verify=aws_keys.sts_verifier(),
+                check=railway_checker(),
+                provider_mint=cloudflare_turnstile(),
+                provider_verify=turnstile.siteverify_verifier(),
+            )
+        except Exception as exc:
+            if incident_id is None:
+                raise
+            # The failure was recorded as an event where a value was minted;
+            # here it is reported, and handed to a person below.
+            report.issue("rotation failed", label, detail=_reason(exc))
+        finally:
+            if incident_id is not None and raw.issues:
+                _hand_to_person(
+                    job,
+                    inventory,
+                    incident_id,
+                    report,
+                    incident_api_factory or incident_mod.api,
+                )
+
+
+def _hand_to_person(
+    job: RotationRequest,
+    inventory: Mapping[str, Any],
+    incident_id: str,
+    report: Any,
+    api_factory: Callable[[str], incident_mod.IncidentApi],
+) -> None:
+    """Ask for a person's task for an incident job that failed, and mark it.
+
+    Never raises: the job is done either way, and a task that could not be
+    asked for is reported.
+    """
+    label = f"{job.name} in {job.config}"
+    entry = (inventory.get("secrets") or {}).get(job.name) or {}
+    task = sweep_mod.incident_task_for(
+        job.name,
+        entry,
+        job.config,
+        incident_id,
+        why=(
+            "rotator-cog's compromised rotation of it failed (see the run "
+            "report), so a person rotates it."
+        ),
+    )
+    try:
+        api = api_factory(MACHINE_NAME)
+        api.request_task(task)
+        api.mark_task_requested(incident_id, job.name, job.config)
+    except Exception as exc:  # noqa: BLE001 — reported; the job is done either way
+        report.issue(
+            "task not asked for",
+            label,
+            detail=f"{type(exc).__name__}: {str(exc)[:300]}",
         )
+        return
+    report.created("task opened", label)
 
 
 def _rotate(
@@ -667,6 +836,7 @@ def _rotate(
             retired=retired,
             verification="ok" if reason is None else "failed",
             verification_reason=reason,
+            incident_id=job.incident_id,
         )
 
     try:
@@ -750,6 +920,7 @@ def _rotate_aws(
             verification="ok" if reason is None else "failed",
             verification_reason=reason,
             aws_key_last4=aws_keys.last4(key_id),
+            incident_id=job.incident_id,
         )
 
     try:
@@ -836,6 +1007,7 @@ def _rotate_provider(
             retired=retired,
             verification="ok" if reason is None else "failed",
             verification_reason=reason,
+            incident_id=job.incident_id,
         )
 
     try:
@@ -937,7 +1109,10 @@ def run_sweep(
             retired_at = now()
             for r in ready:
                 record(sweep_mod.retired_event(r.event, retired_at))
-                report.removed("previous key", f"{r.event.name} in {config}")
+                report.removed(
+                    RETIRED_FORCED if r.forced else RETIRED,
+                    f"{r.event.name} in {config}",
+                )
                 if r.forced:
                     report.issue(
                         "previous key retired while still in use",
@@ -1001,10 +1176,23 @@ def run_sweep(
                 )
                 break
 
-        # 3. A task for each due manual secret: a person rotates it.
-        manual = sweep_mod.manual_due(inventory, latest, config, now=at)
+        # 3. A task for each of the most overdue manual secrets, up to the
+        # limit: a person rotates it.
+        manual = sweep_mod.most_overdue_first(
+            sweep_mod.manual_due(inventory, latest, config, now=at)
+        )
         report.count("manual_due", len(manual))
         asking = os.environ.get(SWEEP_TASKS_VAR, "").strip().lower() == "true"
+        limit = sweep_mod.task_limit(os.environ.get(SWEEP_TASK_LIMIT_VAR))
+        if asking and len(manual) > limit:
+            # One line naming them all: past the limit, the report keeps only
+            # the first few items of a reason.
+            held = ", ".join(due.name for due in manual[limit:])
+            report.notice(
+                f"manual secrets due, task not yet asked (a sweep asks for {limit})",
+                f"{held} in {config}",
+            )
+            manual = manual[:limit]
         for due in manual:
             label = f"{due.name} in {config}"
             if not asking:
@@ -1037,8 +1225,24 @@ def run_sweep(
         except Exception as exc:  # noqa: BLE001 — the rest of the sweep still counts
             report.issue("secret changes not read", config, detail=str(exc)[:500])
         else:
-            report.count("changes", len(changes))
-            for change in sweep_mod.unexplained(changes, events, inventory):
+            odd = sweep_mod.unexplained(changes, events, inventory)
+            report.count(
+                "changes",
+                len(changes),
+                label=(
+                    "{} in the last day"
+                    if odd
+                    else "{} in the last day, all explained by rotations"
+                ),
+                section=DOPPLER_CHANGES,
+            )
+            report.count(
+                "changes_unexplained",
+                len(odd),
+                label="{} not explained by a rotation (named above)",
+                section=DOPPLER_CHANGES,
+            )
+            for change in odd:
                 label = f"{change.name} in {config}"
                 report.issue("changed outside a rotation", label)
                 if not asking:
@@ -1055,9 +1259,104 @@ def run_sweep(
                     )
 
 
+def expand_incident(
+    incident_id: str,
+    *,
+    run_id: str,
+    inventory_loader: Callable[[], Mapping[str, Any]] = load_inventory,
+    api_factory: Callable[[str], incident_mod.IncidentApi] = incident_mod.api,
+    sender_factory: Callable[[], JobSender] = queue_sender,
+) -> None:
+    """Expand one incident into jobs and tasks (incident.py).
+
+    The run report names the incident first and each secret with what this
+    run did for it. A failure for one entry is reported and the walk goes
+    on; only a failure to register the list stops it, since nothing can be
+    tracked without it.
+    """
+    heading = f"incident {incident_id}"
+    with run_report(
+        INCIDENT_FLOW_NAME, repo=REPO, run_id=run_id, version=__version__
+    ) as report:
+        report.count("incident", incident_id)
+        inventory = inventory_loader()
+        listed = incident_mod.entries_for(inventory, worker_rotates(inventory))
+        api = api_factory(MACHINE_NAME)
+        registered = api.register(incident_id, incident_mod.registration(listed))
+        known: dict[tuple[str, str], Any] = {
+            (e.name, e.config): e for e in registered.entries
+        }
+        send: JobSender | None = None
+        counts = {"queued": 0, "tasks": 0, "skipped": 0, "failed": 0}
+        for entry in listed:
+            label = f"{entry.name} in {entry.config}"
+            state = known.get((entry.name, entry.config))
+            if state is not None and state.state == "rotated":
+                report.note(f"{heading}: already rotated", label)
+                counts["skipped"] += 1
+                continue
+            if state is not None and state.task_requested:
+                report.note(f"{heading}: task already opened", label)
+                counts["skipped"] += 1
+                continue
+            log.info(
+                "worker: %s: %s (%s, tier %s)",
+                heading,
+                label,
+                entry.handling,
+                entry.tier,
+            )
+            if entry.handling == "worker":
+                try:
+                    send = send or sender_factory()
+                    send(incident_mod.job_for(entry, incident_id))
+                except Exception as exc:  # noqa: BLE001 — one failure must not stop the rest
+                    report.issue(
+                        f"{heading}: rotation not queued",
+                        label,
+                        detail=f"{type(exc).__name__}: {str(exc)[:300]}",
+                    )
+                    counts["failed"] += 1
+                    continue
+                report.created(f"{heading}: rotation queued", label)
+                counts["queued"] += 1
+                continue
+            secret = inventory["secrets"][entry.name]
+            task = sweep_mod.incident_task_for(
+                entry.name,
+                secret,
+                entry.config,
+                incident_id,
+                why=incident_mod.why_task(secret),
+            )
+            try:
+                api.request_task(task)
+                api.mark_task_requested(incident_id, entry.name, entry.config)
+            except Exception as exc:  # noqa: BLE001 — one failure must not stop the rest
+                report.issue(
+                    f"{heading}: task not asked for",
+                    label,
+                    detail=f"{type(exc).__name__}: {str(exc)[:300]}",
+                )
+                counts["failed"] += 1
+                continue
+            report.created(f"{heading}: task opened", label)
+            counts["tasks"] += 1
+        for key, value in counts.items():
+            report.count(key, value)
+
+
 def process_message(body: str, *, run_id: str, **kwargs: Any) -> None:
     """Handle one message."""
-    message = parse_message(body, RotationJobMessage, RotationSweepMessage)
+    message = parse_message(
+        body, RotationJobMessage, RotationSweepMessage, RotationIncidentMessage
+    )
+    if isinstance(message, RotationIncidentMessage):
+        log.info(
+            "worker: run %s expands incident %s", run_id, message.payload.incident_id
+        )
+        expand_incident(message.payload.incident_id, run_id=run_id)
+        return
     if isinstance(message, RotationSweepMessage):
         log.info("worker: run %s sweeps %s", run_id, message.payload.config)
         run_sweep(message.payload.config, run_id=run_id)

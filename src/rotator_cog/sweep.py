@@ -28,7 +28,12 @@ Infra's schedule sends one ``rotation.sweep`` per config each day. A sweep:
    the steps and the revoke, never a value. The task's key names the
    rotation it follows, so a daily sweep asks for the same task until the
    secret is rotated. A secret held outside Doppler (``configs: []``) is
-   asked for by the prd sweep.
+   asked for by the prd sweep. One run asks for at most the task limit
+   (``ROTATOR_SWEEP_TASK_LIMIT``, default 3): the most overdue first (never
+   rotated, then the oldest latest rotation), then the lowest tier, then by
+   name. The rest are reported as due but not yet asked. Asking again for a
+   task that exists creates nothing, so at most that many are open at once,
+   and the next are asked for as those are rotated.
 4. **Reports drift**: names in Doppler that look secret and have no
    inventory entry, and inventory entries the config should hold but does
    not, as ``scripts/rotate.py check`` does.
@@ -237,6 +242,38 @@ class ManualDue:
     #: ``failed-<date>``.
     cycle: str
     why: str
+    #: When its latest rotation was minted; None when it never was.
+    last: datetime | None = None
+    #: Its inventory tier; an entry that names none counts as the last tier.
+    tier: int = 3
+
+
+#: How many manual-rotation tasks one sweep asks for when the setting is
+#: unset or not a whole number of at least 1.
+TASK_LIMIT_DEFAULT = 3
+
+
+def task_limit(raw: str | None) -> int:
+    """How many manual-rotation tasks one sweep asks for, from the setting."""
+    try:
+        limit = int((raw or "").strip())
+    except ValueError:
+        return TASK_LIMIT_DEFAULT
+    return limit if limit >= 1 else TASK_LIMIT_DEFAULT
+
+
+def most_overdue_first(due: Iterable[ManualDue]) -> list[ManualDue]:
+    """``due`` in the order the sweep asks for tasks.
+
+    Never rotated first, then the oldest latest rotation, then the lowest
+    tier, then by name.
+    """
+
+    def order(d: ManualDue) -> tuple[bool, float, int, str]:
+        minted = d.last.timestamp() if d.last is not None else 0.0
+        return (d.last is not None, minted, d.tier, d.name)
+
+    return sorted(due, key=order)
 
 
 def held_for_sweep(entry: Mapping[str, Any], config: str) -> bool:
@@ -265,9 +302,15 @@ def manual_due(
         if entry.get("kind") != "manual" or not held_for_sweep(entry, config):
             continue
         last = latest.get(name)
+        tier = int(entry.get("tier", 3))
         if last is None:
             out.append(
-                ManualDue(name, "never", "It has never been recorded as rotated.")
+                ManualDue(
+                    name,
+                    "never",
+                    "It has never been recorded as rotated.",
+                    tier=tier,
+                )
             )
         elif last.verification == "failed":
             day = last.minted.date().isoformat()
@@ -276,6 +319,8 @@ def manual_due(
                     name,
                     f"failed-{day}",
                     f"Its rotation of {day} was recorded as failed.",
+                    last=last.minted,
+                    tier=tier,
                 )
             )
         elif now - last.minted >= cadence:
@@ -286,6 +331,8 @@ def manual_due(
                     f"after-{day}",
                     f"It was last rotated on {day}, and is due every "
                     f"{cadence.days} days.",
+                    last=last.minted,
+                    tier=tier,
                 )
             )
     return out
@@ -319,6 +366,74 @@ def task_for(
             done_when=(
                 f"`{command}` has recorded a rotation of {due.name} in "
                 f"{config}, and the old value is revoked."
+            ),
+            constraints=(
+                "The new value goes in only at rotate.py's hidden prompt: "
+                "never into a chat, a ticket or a file."
+            ),
+            effort="S",
+            body="\n".join(lines),
+            labels=["person"],
+        ),
+    )
+
+
+def incident_task_for(
+    name: str,
+    entry: Mapping[str, Any],
+    config: str,
+    incident_id: str,
+    *,
+    why: str,
+) -> TaskCreateRequest:
+    """The task asking a person to invalidate ``name`` in ``config`` for an
+    incident: how, never a value.
+
+    ``why`` says why a person does it (the worker does not rotate its kind,
+    or the worker's job for it failed). The task's key ends in the incident
+    id, so asking again for the same incident makes no second task, and an
+    incident task and an ordinary cycle task for the secret can both be
+    open: one rotation closes both.
+    """
+    command = (
+        f"uv run scripts/rotate.py rotate {name} --compromised "
+        f"--reason incident-{incident_id}"
+    )
+    if config != "prd":
+        command += f" --config {config}"
+    kind = entry.get("kind")
+    lines = [
+        f"Rotation incident {incident_id}: every secret is being invalidated.",
+        why,
+        "",
+    ]
+    if kind == "not-rotated":
+        lines += [
+            f"The inventory lists it as never rotated: {entry.get('can', 'no reason given')}.",
+            "If it truly cannot be invalidated (public by design, an "
+            "identifier, not a credential), say so on this task and close "
+            "it; otherwise rotate it as below.",
+            "",
+        ]
+    lines += [
+        f"Run from a rotator-cog checkout: `{command}`",
+        "It prints the steps, takes the new value at a hidden prompt, writes "
+        "it where the inventory says, and records the rotation.",
+        "",
+        f"Steps: {entry.get('steps', 'see the provider console')}",
+        f"Revoke: {entry.get('revoke', 'revoke the old value at the provider')}",
+    ]
+    if entry.get("can") and kind != "not-rotated":
+        lines.append(f"What it can do: {entry['can']}")
+    return TaskCreateRequest(
+        source="secret-rotation",
+        external_id=f"secret-rotation.{config}.{name}.{incident_id}",
+        draft=TaskDraft(
+            title=f"Incident: invalidate {name} in {config}",
+            done_when=(
+                f"A rotation of {name} in {config} is recorded after the "
+                f"incident started, and the old value is revoked; or, for a "
+                "secret that cannot be invalidated, the task says why."
             ),
             constraints=(
                 "The new value goes in only at rotate.py's hidden prompt: "
