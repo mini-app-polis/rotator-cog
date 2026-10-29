@@ -53,6 +53,16 @@ The API keeps no copy of the inventory; the rotator packages it.
   started gets no second job, and an entry whose task was asked for gets
   no second ask. The task key ends in the incident id, so the task manager
   makes no second task either.
+- Each incident job is rotated compromised whatever its mode says, and its
+  rotation event carries the incident id. When it fails, however it fails
+  (rejected, not ready, not in Doppler, a write, redeploy or check that
+  fails), the failure is recorded where a value was minted and reported,
+  a person's task is asked for under the same incident key, and the entry
+  is marked with the API. The job is then acknowledged, not dead-lettered:
+  the queue delivers each message once and keeps the incident's jobs in
+  one group, so a dead-lettered job would hold the rest until its
+  visibility timeout. A routine job's failure still fails the job, as
+  before.
 - An incident task and an ordinary cycle task for the same secret may both
   be open; one rotation recorded after both were created closes both.
 - The run report names the incident first; its full per-secret state is

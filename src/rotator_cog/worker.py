@@ -586,38 +586,142 @@ def _not_ready(
     return bool(gaps)
 
 
+class _IncidentReport:
+    """A run report whose every line names the incident first."""
+
+    def __init__(self, report: Any, incident_id: str) -> None:
+        self._report = report
+        self._prefix = f"incident {incident_id}: "
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._report, name)
+
+    def note(self, reason: str, item: str | None = None) -> None:
+        self._report.note(self._prefix + reason, item)
+
+    def notice(self, reason: str, item: str | None = None) -> None:
+        self._report.notice(self._prefix + reason, item)
+
+    def issue(
+        self, reason: str, item: str | None = None, *, detail: str | None = None
+    ) -> None:
+        self._report.issue(self._prefix + reason, item, detail=detail)
+
+    def created(self, kind: str, item: str | None = None, **kw: Any) -> None:
+        self._report.created(self._prefix + kind, item, **kw)
+
+    def updated(self, kind: str, item: str | None = None, **kw: Any) -> None:
+        self._report.updated(self._prefix + kind, item, **kw)
+
+    def removed(self, kind: str, item: str | None = None, **kw: Any) -> None:
+        self._report.removed(self._prefix + kind, item, **kw)
+
+
 def rotate(
     job: RotationRequest,
     *,
     run_id: str,
     inventory_loader: Callable[[], Mapping[str, Any]] = load_inventory,
     token_reader: Callable[[str], str] = doppler_token,
+    rotator: Callable[..., None] | None = None,
+    incident_api_factory: Callable[[str], incident_mod.IncidentApi] | None = None,
 ) -> None:
-    """Check one job and rotate its secret. Never redelivered."""
+    """Check one job and rotate its secret. Never redelivered.
+
+    A job that carries an incident id is rotated compromised whatever its
+    mode says, and its event records the incident. When it fails, however
+    it fails, the failure is recorded and reported, a person gets a task
+    to rotate the secret (incident_task_for, keyed on the incident, so a
+    repeat makes no second task) and the entry is marked with the API.
+    The job is then acknowledged rather than dead-lettered: the jobs queued
+    behind it in the incident still run.
+    """
+    incident_id = job.incident_id
+    if incident_id is not None and job.mode != "compromised":
+        job = job.model_copy(update={"mode": "compromised"})
     label = f"{job.name} in {job.config}"
-    with run_report(FLOW_NAME, repo=REPO, run_id=run_id, version=__version__) as report:
+    rotator = rotator or _rotate
+    with run_report(FLOW_NAME, repo=REPO, run_id=run_id, version=__version__) as raw:
+        report: Any = raw
+        if incident_id is not None:
+            raw.count("incident", incident_id)
+            report = _IncidentReport(raw, incident_id)
         inventory = inventory_loader()
         try:
-            entry = validate(job, inventory)
-        except InvalidJob as exc:
-            report.issue("rotation job rejected", label, detail=str(exc))
-            return
-        token = token_reader(job.config)
-        _rotate(
-            job,
-            entry,
-            token,
-            inventory=inventory,
-            report=report,
-            redeploy=railway_redeployer(),
-            verify=machine_verifier(inventory),
-            record=api_recorder(),
-            iam_factory=_iam,
-            aws_verify=aws_keys.sts_verifier(),
-            check=railway_checker(),
-            provider_mint=cloudflare_turnstile(),
-            provider_verify=turnstile.siteverify_verifier(),
+            try:
+                entry = validate(job, inventory)
+            except InvalidJob as exc:
+                report.issue("rotation job rejected", label, detail=str(exc))
+                return
+            token = token_reader(job.config)
+            rotator(
+                job,
+                entry,
+                token,
+                inventory=inventory,
+                report=report,
+                redeploy=railway_redeployer(),
+                verify=machine_verifier(inventory),
+                record=api_recorder(),
+                iam_factory=_iam,
+                aws_verify=aws_keys.sts_verifier(),
+                check=railway_checker(),
+                provider_mint=cloudflare_turnstile(),
+                provider_verify=turnstile.siteverify_verifier(),
+            )
+        except Exception as exc:
+            if incident_id is None:
+                raise
+            # The failure was recorded as an event where a value was minted;
+            # here it is reported, and handed to a person below.
+            report.issue("rotation failed", label, detail=_reason(exc))
+        finally:
+            if incident_id is not None and raw.issues:
+                _hand_to_person(
+                    job,
+                    inventory,
+                    incident_id,
+                    report,
+                    incident_api_factory or incident_mod.api,
+                )
+
+
+def _hand_to_person(
+    job: RotationRequest,
+    inventory: Mapping[str, Any],
+    incident_id: str,
+    report: Any,
+    api_factory: Callable[[str], incident_mod.IncidentApi],
+) -> None:
+    """Ask for a person's task for an incident job that failed, and mark it.
+
+    Never raises: the job is done either way, and a task that could not be
+    asked for is reported.
+    """
+    label = f"{job.name} in {job.config}"
+    entry = (inventory.get("secrets") or {}).get(job.name) or {}
+    task = sweep_mod.incident_task_for(
+        job.name,
+        entry,
+        job.config,
+        incident_id,
+        why=(
+            "rotator-cog's compromised rotation of it failed (see the run "
+            "report), so a person rotates it."
+        ),
+    )
+    try:
+        api = api_factory(MACHINE_NAME)
+        api.request_task(task)
+        api.mark_task_requested(incident_id, job.name, job.config)
+    except Exception as exc:  # noqa: BLE001 — reported; the job is done either way
+        report.issue(
+            "task not asked for",
+            label,
+            detail=f"{type(exc).__name__}: {str(exc)[:300]}",
         )
+        return
+    report.created("task opened", label)
 
 
 def _rotate(
@@ -721,6 +825,7 @@ def _rotate(
             retired=retired,
             verification="ok" if reason is None else "failed",
             verification_reason=reason,
+            incident_id=job.incident_id,
         )
 
     try:
@@ -804,6 +909,7 @@ def _rotate_aws(
             verification="ok" if reason is None else "failed",
             verification_reason=reason,
             aws_key_last4=aws_keys.last4(key_id),
+            incident_id=job.incident_id,
         )
 
     try:
@@ -890,6 +996,7 @@ def _rotate_provider(
             retired=retired,
             verification="ok" if reason is None else "failed",
             verification_reason=reason,
+            incident_id=job.incident_id,
         )
 
     try:
