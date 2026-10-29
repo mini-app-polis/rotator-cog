@@ -32,7 +32,7 @@ CREATE_FIELDS = (
     "aws_key_last4",
 )
 
-#: The kinds an event can have: the inventory's, less not-rotated.
+#: The kinds an event can have: the inventory's.
 KINDS = ("machine-key", "generated", "aws-access-key", "manual", "provider-api")
 
 #: Why verification is "failed". Each is a fixed sentence: the contract

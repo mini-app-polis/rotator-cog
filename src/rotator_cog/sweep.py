@@ -401,21 +401,10 @@ def incident_task_for(
     )
     if config != "prd":
         command += f" --config {config}"
-    kind = entry.get("kind")
     lines = [
         f"Rotation incident {incident_id}: every secret is being invalidated.",
         why,
         "",
-    ]
-    if kind == "not-rotated":
-        lines += [
-            f"The inventory lists it as never rotated: {entry.get('can', 'no reason given')}.",
-            "If it truly cannot be invalidated (public by design, an "
-            "identifier, not a credential), say so on this task and close "
-            "it; otherwise rotate it as below.",
-            "",
-        ]
-    lines += [
         f"Run from a rotator-cog checkout: `{command}`",
         "It prints the steps, takes the new value at a hidden prompt, writes "
         "it where the inventory says, and records the rotation.",
@@ -423,7 +412,7 @@ def incident_task_for(
         f"Steps: {entry.get('steps', 'see the provider console')}",
         f"Revoke: {entry.get('revoke', 'revoke the old value at the provider')}",
     ]
-    if entry.get("can") and kind != "not-rotated":
+    if entry.get("can"):
         lines.append(f"What it can do: {entry['can']}")
     return TaskCreateRequest(
         source="secret-rotation",
@@ -461,8 +450,7 @@ def drift(
     missing = sorted(
         n
         for n, e in secrets.items()
-        if e.get("kind") != "not-rotated"
-        and config in (e.get("configs") if e.get("configs") is not None else ["prd"])
+        if config in (e.get("configs") if e.get("configs") is not None else ["prd"])
         and n not in names
     )
     return unknown, missing

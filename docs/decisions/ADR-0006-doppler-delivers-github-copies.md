@@ -7,6 +7,15 @@ Date: 2026-10-27
 Accepted. Narrows ADR-0001: the worker no longer refuses a secret because
 GitHub also holds it.
 
+> **Amended (2026-10-29).** The single vault this ADR names,
+> `mini-app-polis-ecosystem`, is split in two: `mini-app-polis-secrets`
+> holds every value that has to be rotated after a breach, and
+> `mini-app-polis-settings` everything else. Readers reference whichever
+> holds each value, and Doppler's syncs deliver both the same way. A
+> rotation writes `mini-app-polis-secrets` and nothing else; the rotator
+> covers the secrets project only. The decision below is otherwise
+> unchanged.
+
 ## Context
 
 Some secrets are read by GitHub Actions as well as by services: machine

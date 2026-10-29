@@ -89,7 +89,6 @@ from __future__ import annotations
 import importlib
 import os
 import secrets as pysecrets
-import time
 from collections.abc import Callable, Collection, Mapping
 from datetime import UTC, datetime
 from importlib import resources
@@ -100,7 +99,7 @@ import httpx
 import yaml
 from mini_app_polis import load_secrets, timing
 from mini_app_polis import logger as logger_mod
-from mini_app_polis.api import KaianoApiClient
+from mini_app_polis.api import KaianoApiClient, KaianoApiError
 from mini_app_polis.api.contract import (
     RotationEventCreate,
     RotationIncidentMessage,
@@ -205,13 +204,11 @@ DOPPLER_CHANGES = "Doppler changes"
 SYNC_TIMEOUT_SECONDS = 120.0
 DEPLOY_TIMEOUT_SECONDS = 240.0
 
-#: The whoami check of a new key: how long one request may take, how many
-#: are made, and how long between them. The API has just been redeployed,
-#: so a 5xx or a refused connection is worth asking again; a 401 is not.
+#: The whoami check of a new key: how long one request may take. Retries
+#: are KaianoApiClient's: a refused connection, 429, 502, 503 and 504 are
+#: asked again, any other answer is final.
 VERIFY_TIMEOUT_SECONDS = 15.0
-VERIFY_ATTEMPTS = 3
-VERIFY_RETRY_SECONDS = 5.0
-VERIFY_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+WHOAMI_PATH = "/v1/identity/whoami"
 
 #: How long before the function's timeout a run is stopped, leaving room for
 #: the run report and the handler's return.
@@ -349,44 +346,37 @@ class _WhoAmI(BaseModel):
     verified: _Verified = Field(..., description="The verified caller.")
 
 
-def machine_verifier(
-    inventory: Mapping[str, Any], *, transport: httpx.BaseTransport | None = None
-) -> Verifier:
-    """Check a machine key against the config's API: whoami must name it."""
+def machine_verifier(inventory: Mapping[str, Any]) -> Verifier:
+    """Check a machine key against the config's API: whoami must name it.
+
+    The request presents the key being checked, never this cog's own.
+    """
     bases = {"prd": inventory["api_base_url"], "dev": inventory["api_base_url_dev"]}
 
     def verify(
         name: str, entry: Mapping[str, Any], config: str, value: str
     ) -> str | None:
         machine = machine_name(name)
-        failure = "no answer"
-        response: httpx.Response | None = None
-        for attempt in range(1, VERIFY_ATTEMPTS + 1):
-            if attempt > 1:
-                time.sleep(VERIFY_RETRY_SECONDS)
-            try:
-                with httpx.Client(
-                    timeout=VERIFY_TIMEOUT_SECONDS, transport=transport
-                ) as client:
-                    response = client.get(
-                        f"{bases[config]}/v1/identity/whoami",
-                        headers={
-                            "Authorization": f"Bearer {value}",
-                            "User-Agent": USER_AGENT,
-                        },
-                    )
-            except httpx.HTTPError as exc:
-                response = None
-                failure = f"whoami could not be asked: {type(exc).__name__}"
-                continue
-            if response.status_code not in VERIFY_RETRY_STATUSES:
-                break
-        if response is None:
-            return failure
-        if response.status_code != 200:
-            return f"whoami answered HTTP {response.status_code}"
+        if not value:
+            # KaianoApiClient falls back to the environment's key without one.
+            return "no key to check"
+        client = KaianoApiClient(
+            base_url=bases[config],
+            api_key=value,
+            timeout=VERIFY_TIMEOUT_SECONDS,
+            user_agent=USER_AGENT,
+        )
         try:
-            subject = _WhoAmI.model_validate_json(response.content).verified.subject
+            body = client.get(WHOAMI_PATH)
+        except KaianoApiError as exc:
+            if exc.status_code:
+                return f"whoami answered HTTP {exc.status_code}"
+            cause = exc.__cause__
+            return f"whoami could not be asked: {type(cause or exc).__name__}"
+        except ValueError:
+            return "whoami answered without a subject"
+        try:
+            subject = _WhoAmI.model_validate(body).verified.subject
         except ValidationError:
             return "whoami answered without a subject"
         if subject != machine:

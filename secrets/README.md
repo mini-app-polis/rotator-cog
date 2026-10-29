@@ -1,41 +1,51 @@
 # Secrets
 
 Doppler is where every secret is edited, once, in
-`mini-app-polis-ecosystem` (`prd` and `dev`). Everything that reads one
+`mini-app-polis-secrets` (`prd` and `dev`). Everything that reads one
 holds a reference to it in a Doppler project of its own: each Railway
 service, each Lambda worker (through Parameter Store) and each
 repository's GitHub Actions secrets and variables. A value written to the
-ecosystem project reaches all of them through Doppler's syncs, so a
+secrets project reaches all of them through Doppler's syncs, so a
 rotation writes Doppler and nothing else.
 
-- `inventory.yaml`: every credential by name. It records what each one
+The rotator covers the secrets project only. A value is a secret if it has
+to be rotated after a breach; one that never needs rotating (a public key,
+an identifier, a timestamp) is a setting, held in
+`mini-app-polis-settings`, and has no inventory entry. `rotate.py check`,
+the sweep's drift report and the worker read and write the secrets
+project alone, and the rotator's Doppler tokens reach nothing else.
+
+- `inventory.yaml`: every secret by name. It records what each one
   can do, where it is held, how to rotate it and how to check the new
   value. It never holds a value.
 - The record of every rotation is kept by the API, not here: one event
   per rotation of a secret in a Doppler config, at
-  `/v1/secrets/rotation-events`. `scripts/rotate.py` writes it under your
-  own identity and reads it back to say what is due.
+  `/v1/secrets/rotation-events`. `scripts/rotate.py` writes it as the
+  machine owner-console and reads it back to say what is due.
 - `../scripts/rotate.py`: does the rotation.
 
 ## Using it
 
 ```sh
-uv run scripts/rotate.py list --due                 # what is overdue
-uv run scripts/rotate.py check                      # Doppler prd vs the inventory
-uv run scripts/rotate.py rotate OPENAI_API_KEY --reason "routine"
-uv run scripts/rotate.py rotate --kind machine-key --reason "routine" --dry-run
+doppler run --project owner-session --config prd -- uv run scripts/rotate.py list --due   # what is overdue
+uv run scripts/rotate.py check                      # Doppler mini-app-polis-secrets prd vs the inventory
+doppler run --project owner-session --config prd -- uv run scripts/rotate.py rotate OPENAI_API_KEY --reason "routine"
+doppler run --project owner-session --config prd -- uv run scripts/rotate.py rotate --kind machine-key --reason "routine" --dry-run
 ```
 
 Prerequisites on the Mac: `doppler` (logged in), `aws` (profile
 `miniapppolis`), `curl`.
 
-Reading or writing the record (`list`, `rotate`, `verify`, `pg-roles`) asks
-for a Clerk session token at a hidden prompt: the API
-records the rotation as you, and a session is how a person signs in to it.
-On a page signed in to the wcs Clerk tenant, run
-`await Clerk.session.getToken()` in the browser console and paste the
-result. A token lasts about a minute, so the script asks again when the API
-says it has expired.
+Reading or writing the record (`list`, `rotate`, `verify`, `pg-roles`)
+presents `OWNER_CONSOLE_API_KEY`, the key of the machine owner-console
+(role secrets-rotator). It lives in the secrets project and reaches the script only
+through `doppler run` with your own Doppler login, from the `owner-session`
+project's `prd` config, since the production API keeps the record whatever
+config is rotated. It is never stored on the workstation, and rotate.py
+removes it from its environment once read, so no command it runs inherits
+it. Without it, or when the API refuses it, the script stops with a
+one-line reason. The key is in `inventory.yaml` and is rotated like every
+other machine key.
 
 Each run:
 
@@ -125,7 +135,7 @@ A daily sweep per config (14:00 UTC) does the rest:
 A Railway service holds only the names its own Doppler config references,
 so `api-kaianolevine-com` needs each `<NAME>_API_KEY_PREVIOUS` referenced
 in its config for that environment before the worker can rotate the key
-there. A previous slot is always present in the ecosystem project, empty
+there. A previous slot is always present in the secrets project, empty
 when no handover is under way (ADR-0005), so the reference can be added at
 any time. Railway keeps no empty variable, though, so the slot only shows
 on the service while it holds a key. The worker checks before it writes
@@ -138,11 +148,12 @@ recorded as failed, with nothing written but an unused key in the slot.
 ## Adding a secret
 
 Add the secret to `inventory.yaml` in the same change that adds it to
-Doppler's `mini-app-polis-ecosystem`. `rotate.py check` exits non-zero
-when a secret-looking name there is missing from the inventory.
+Doppler's `mini-app-polis-secrets`. `rotate.py check` exits non-zero
+when a secret-looking name there is missing from the inventory. A setting
+goes in `mini-app-polis-settings` instead, with no inventory entry.
 
 Then reference it from whatever reads it: a name in the reader's own
-Doppler config, `${mini-app-polis-ecosystem.<config>.NAME}`. The
+Doppler config, `${mini-app-polis-secrets.<config>.NAME}`. The
 ecosystem's Terraform for Doppler (in mini-app-polis/infra) declares which
 names each reader takes. A Railway service also declares the name in its
 `.railway/railway.ts`, or the next apply removes it. Until it is
@@ -163,7 +174,7 @@ Work tier by tier. Rotate each tier with
 0. **Secret store and source code first.** Rotate the Doppler tokens
    before anything else: whoever holds one reads every value in its config,
    including the ones rotated after it. The rotator's own two tokens reach
-   the vault, so they come first. Revoke each GitHub token before re-minting it, then check that
+   the secrets project, so they come first. Revoke each GitHub token before re-minting it, then check that
    it is still needed at all. Re-mint the Railway tokens: Railway
    invalidated them, so the IaC applies and db-drill stay broken until
    this is done.

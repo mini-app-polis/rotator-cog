@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+from collections.abc import Iterator
 from typing import Any
 
 import httpx
 import pytest
+import respx
+from mini_app_polis.api import KaianoApiClient
 from mini_app_polis.api.contract import RotationRequest
 from test_doppler import FakeDoppler
 
@@ -596,14 +599,35 @@ def test_a_check_railway_cannot_answer_is_reported_and_writes_nothing() -> None:
 # -- checking a machine key ------------------------------------------------
 
 
-def _whoami(status: int = 200, body: Any = None, seen: list | None = None) -> Any:
+def _whoami(
+    mock: respx.MockRouter,
+    status: int = 200,
+    body: Any = None,
+    seen: list | None = None,
+) -> worker.Verifier:
     def handle(request: httpx.Request) -> httpx.Response:
         if seen is not None:
             seen.append(request)
         payload = {"verified": {"subject": "deejay-cog"}} if body is None else body
         return httpx.Response(status, json=payload)
 
-    return worker.machine_verifier(INVENTORY, transport=httpx.MockTransport(handle))
+    mock.get(url__regex=r".*/v1/identity/whoami$").mock(side_effect=handle)
+    return worker.machine_verifier(INVENTORY)
+
+
+@pytest.fixture
+def api() -> Iterator[respx.MockRouter]:
+    with respx.mock(assert_all_called=False) as mock:
+        yield mock
+
+
+@pytest.fixture
+def own_key(monkeypatch: pytest.MonkeyPatch) -> str:
+    """The cog's own key in the environment, which the check must not present."""
+    monkeypatch.setenv("KAIANO_API_KEY", "own-key")
+    monkeypatch.setenv("ROTATOR_COG_API_KEY", "own-key")
+    monkeypatch.setenv("KAIANO_API_MACHINE_NAME", "rotator-cog")
+    return "own-key"
 
 
 def test_machine_names_follow_the_variable() -> None:
@@ -611,16 +635,27 @@ def test_machine_names_follow_the_variable() -> None:
     assert worker.machine_name("DB_OPS_API_KEY") == "db-ops"
 
 
-def test_a_key_that_names_its_machine_is_verified_at_the_configs_api() -> None:
+def test_a_key_that_names_its_machine_is_verified_at_the_configs_api(
+    api: respx.MockRouter, own_key: str
+) -> None:
     seen: list[httpx.Request] = []
-    assert _whoami(seen=seen)(KEY, {}, "dev", "dev_new") is None
+    assert _whoami(api, seen=seen)(KEY, {}, "dev", "dev_new") is None
     (request,) = seen
     assert str(request.url) == "https://dev-api.test.invalid/v1/identity/whoami"
     assert request.headers["Authorization"] == "Bearer dev_new"
     assert request.headers["User-Agent"] == worker.USER_AGENT
     seen.clear()
-    _whoami(seen=seen)(KEY, {}, "prd", "new")
+    worker.machine_verifier(INVENTORY)(KEY, {}, "prd", "new")
     assert seen[0].url.host == "api.test.invalid"
+    assert seen[0].headers["Authorization"] == "Bearer new"
+
+
+def test_an_empty_key_is_refused_without_presenting_the_cogs_own(
+    api: respx.MockRouter, own_key: str
+) -> None:
+    seen: list[httpx.Request] = []
+    assert _whoami(api, seen=seen)(KEY, {}, "prd", "") == "no key to check"
+    assert seen == []
 
 
 @pytest.mark.parametrize(
@@ -632,22 +667,36 @@ def test_a_key_that_names_its_machine_is_verified_at_the_configs_api() -> None:
     ],
 )
 def test_a_key_that_fails_whoami_says_why_without_the_value(
-    status: int, body: Any, reason: str
+    api: respx.MockRouter, status: int, body: Any, reason: str
 ) -> None:
-    got = _whoami(status, body)(KEY, {}, "prd", "secret-new-value")
+    got = _whoami(api, status, body)(KEY, {}, "prd", "secret-new-value")
     assert got is not None and reason in got and "secret-new-value" not in got
 
 
-def test_an_api_that_cannot_be_reached_is_a_failed_check() -> None:
-    def fail(request: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError("down")
+def test_a_whoami_answer_that_is_not_json_has_no_subject(
+    api: respx.MockRouter,
+) -> None:
+    api.get(url__regex=r".*/v1/identity/whoami$").mock(
+        return_value=httpx.Response(200, text="<html>hello</html>")
+    )
+    got = worker.machine_verifier(INVENTORY)(KEY, {}, "prd", "v")
+    assert got == "whoami answered without a subject"
 
-    verify = worker.machine_verifier(INVENTORY, transport=httpx.MockTransport(fail))
+
+def test_an_api_that_cannot_be_reached_is_a_failed_check(
+    api: respx.MockRouter,
+) -> None:
+    api.get(url__regex=r".*/v1/identity/whoami$").mock(
+        side_effect=httpx.ConnectError("down")
+    )
+    verify = worker.machine_verifier(INVENTORY)
     assert verify(KEY, {}, "prd", "v") == "whoami could not be asked: ConnectError"
 
 
-def test_an_api_that_is_still_coming_up_is_asked_again() -> None:
-    answers = [httpx.ConnectError("down"), 503]
+def test_an_api_that_is_still_coming_up_is_asked_again(
+    api: respx.MockRouter,
+) -> None:
+    answers: list[Any] = [httpx.ConnectError("down"), 503]
 
     def handle(request: httpx.Request) -> httpx.Response:
         if answers:
@@ -657,22 +706,24 @@ def test_an_api_that_is_still_coming_up_is_asked_again() -> None:
             return httpx.Response(answer, json={})
         return httpx.Response(200, json={"verified": {"subject": "deejay-cog"}})
 
-    verify = worker.machine_verifier(INVENTORY, transport=httpx.MockTransport(handle))
-    assert verify(KEY, {}, "prd", "v") is None
+    api.get(url__regex=r".*/v1/identity/whoami$").mock(side_effect=handle)
+    assert worker.machine_verifier(INVENTORY)(KEY, {}, "prd", "v") is None
 
 
-def test_an_api_that_stays_down_is_asked_every_attempt_then_fails() -> None:
+def test_an_api_that_stays_down_is_asked_every_attempt_then_fails(
+    api: respx.MockRouter,
+) -> None:
     seen: list[httpx.Request] = []
-    verify = _whoami(503, {}, seen=seen)
+    verify = _whoami(api, 503, {}, seen=seen)
     assert verify(KEY, {}, "prd", "v") == "whoami answered HTTP 503"
-    assert len(seen) == worker.VERIFY_ATTEMPTS
+    assert len(seen) == KaianoApiClient().max_retries
 
 
-def test_a_key_the_api_refuses_is_not_asked_again() -> None:
+@pytest.mark.parametrize("status", [401, 500])
+def test_a_final_answer_is_not_asked_again(api: respx.MockRouter, status: int) -> None:
     seen: list[httpx.Request] = []
-    assert (
-        _whoami(401, {}, seen=seen)(KEY, {}, "prd", "v") == "whoami answered HTTP 401"
-    )
+    verify = _whoami(api, status, {}, seen=seen)
+    assert verify(KEY, {}, "prd", "v") == f"whoami answered HTTP {status}"
     assert len(seen) == 1
 
 

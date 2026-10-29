@@ -69,11 +69,11 @@ INVENTORY: dict[str, Any] = {
             "tier": 2,
             "configs": ["prd", "dev"],
         },
-        # Never rotated, no tier: last, as tier 3.
-        "PUBLIC_SITE_KEY": {
-            "kind": "not-rotated",
+        # No tier: last, as tier 3.
+        "UNTIERED_TOKEN": {
+            "kind": "manual",
             "configs": ["prd", "dev"],
-            "can": "render a widget; public by design",
+            "can": "post to a channel",
         },
         # Worker-rotated, dev only, tier 0.
         "DEV_ONLY_API_KEY": {
@@ -90,11 +90,11 @@ ORDER = [
     ("DEEJAY_COG_API_KEY", "prd", 1, "worker"),
     ("RAILWAY_DB_PASSWORD", "prd", 1, "task"),
     ("OPENAI_API_KEY", "prd", 2, "task"),
-    ("PUBLIC_SITE_KEY", "prd", 3, "task"),
+    ("UNTIERED_TOKEN", "prd", 3, "task"),
     ("DEV_ONLY_API_KEY", "dev", 0, "worker"),
     ("DEEJAY_COG_API_KEY", "dev", 1, "worker"),
     ("OPENAI_API_KEY", "dev", 2, "task"),
-    ("PUBLIC_SITE_KEY", "dev", 3, "task"),
+    ("UNTIERED_TOKEN", "dev", 3, "task"),
 ]
 
 
@@ -294,7 +294,7 @@ def test_a_failure_does_not_stop_the_entries_after_it(posted: list) -> None:
 
     assert [(j.name, j.config) for j in queue.sent] == [("DEV_ONLY_API_KEY", "dev")]
     assert ("GITHUB_DASHBOARD_TOKEN", "prd") not in api.task_requested
-    assert ("PUBLIC_SITE_KEY", "dev") in api.task_requested
+    assert ("UNTIERED_TOKEN", "dev") in api.task_requested
     report = _report(posted)
     assert report["severity"] == "WARN"
     assert report["failed"] == 3
@@ -318,17 +318,6 @@ def test_a_task_carries_the_command_steps_and_revoke() -> None:
     assert "Revoke: github.com > delete the old token" in body
     assert INCIDENT in body
     assert task.draft.labels == ["person"]
-
-
-def test_a_not_rotated_task_says_it_may_not_be_invalidatable() -> None:
-    entry = INVENTORY["secrets"]["PUBLIC_SITE_KEY"]
-    task = worker.sweep_mod.incident_task_for(
-        "PUBLIC_SITE_KEY", entry, "prd", INCIDENT, why=incident.why_task(entry)
-    )
-    body = task.draft.body or ""
-    assert "never rotated: render a widget; public by design" in body
-    assert "truly cannot be invalidated" in body
-    assert "--config" not in body
 
 
 def test_nothing_sent_reported_or_asked_carries_a_value(posted: list) -> None:

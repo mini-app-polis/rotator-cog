@@ -20,21 +20,18 @@ def test_the_package_has_a_version() -> None:
     assert isinstance(rotator_cog.__version__, str)
 
 
-def test_every_rotated_kind_has_a_cadence() -> None:
+def test_every_kind_has_a_cadence() -> None:
     inv = _inventory()
     cadences = inv["cadence_days"]
     for name, entry in inv["secrets"].items():
         kind = entry["kind"]
-        if kind == "not-rotated":
-            continue
         assert kind in cadences, f"{name}: kind {kind} has no cadence_days entry"
         assert cadences[kind] > 0
 
 
 def test_every_secret_has_a_tier() -> None:
     for name, entry in _inventory()["secrets"].items():
-        if entry["kind"] != "not-rotated":
-            assert isinstance(entry.get("tier"), int), f"{name} has no tier"
+        assert isinstance(entry.get("tier"), int), f"{name} has no tier"
 
 
 def test_a_per_config_redeploy_names_only_configs_the_entry_is_held_in() -> None:
