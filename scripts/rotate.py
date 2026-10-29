@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["pyyaml>=6"]
+# dependencies = ["miniapppolis-common-utils>=7.0.0,<8", "pyyaml>=6"]
 # ///
 """Rotate the fleet's secrets and record that it happened.
 
@@ -12,8 +12,11 @@
 
 secrets/inventory.yaml says what each secret is and how to rotate it. The
 API keeps the record: one event per rotation, written here through
-POST /v1/secrets/rotation-events under the owner's own identity (a Clerk
-session token pasted at a hidden prompt). Neither ever holds a value.
+POST /v1/secrets/rotation-events as the machine owner-console, with
+OWNER_CONSOLE_API_KEY. Neither ever holds a value. The key is read from the
+environment, so the script runs under the owner's own Doppler login:
+
+    doppler run --project owner-session --config prd -- uv run scripts/rotate.py ...
 
 Values never pass through stdout, an argument list or a file: a minted value
 goes to Doppler on stdin, a pasted value is read with getpass, and verify commands run under `doppler run`, so the value
@@ -46,14 +49,16 @@ import urllib.parse
 from pathlib import Path
 
 import yaml
+from mini_app_polis.api import KaianoApiClient, KaianoApiError
+from mini_app_polis.api.contract import RotationEventCreate
+from pydantic import ValidationError
 
 ROOT = Path(__file__).resolve().parents[1]
 INVENTORY = ROOT / "secrets" / "inventory.yaml"
 
-# The repository's own package, standard library only: the record's client,
-# the events it writes, and entries resolved per config.
+# The repository's own package, standard library only: the events it
+# writes, and entries resolved per config.
 sys.path.insert(0, str(ROOT / "src"))
-from rotator_cog import api as record_api  # noqa: E402
 from rotator_cog import entries, events  # noqa: E402
 
 AWS_PROFILE = os.environ.get("AWS_PROFILE", "miniapppolis")
@@ -79,25 +84,71 @@ def entry(inv: dict, name: str, config: str = "prd") -> dict:
     return e
 
 
-TOKEN_HELP = (
-    "The API records rotations as you, and you sign in to it with a Clerk\n"
-    "session token. On a page signed in to the wcs Clerk tenant, run\n"
-    "`await Clerk.session.getToken()` in the browser console and paste the\n"
-    "result. It lasts about a minute; you are asked again when it expires."
-)
+#: The variable holding the key rotate.py presents to the API.
+OWNER_KEY_VAR = "OWNER_CONSOLE_API_KEY"
+#: The API's largest page of rotation events.
+PAGE = 500
 
 
-def record_api_for(args) -> record_api.RotationEvents:
-    """The rotation record, as the person running this script."""
-    shown = []
+class Record:
+    """The rotation record, as the machine owner-console.
 
-    def token() -> str:
-        if not shown:
-            print(TOKEN_HELP, file=sys.stderr)
-            shown.append(True)
-        return getpass.getpass("session token (hidden, blank to stop): ")
+    Events go in and come out as the dicts ``events`` builds and reads.
+    """
 
-    return record_api.RotationEvents(args.api, token)
+    def __init__(self, client: KaianoApiClient) -> None:
+        self._client = client
+
+    def record(self, event: dict) -> None:
+        """Write one event, or update the one with the same key."""
+        self._client.record_rotation_event(RotationEventCreate.model_validate(event))
+
+    def list(
+        self, *, name: str | None = None, config=None, latest: bool = False
+    ) -> list[dict]:
+        """Every matching event, newest minted first, across pages."""
+        out: list[dict] = []
+        while True:
+            page = self._client.list_rotation_events(
+                name=name,
+                config=config,
+                latest=latest or None,
+                limit=PAGE,
+                offset=len(out),
+            )
+            out.extend(e.model_dump(mode="json") for e in page)
+            if len(page) < PAGE:
+                return out
+
+
+def owner_key() -> str:
+    """OWNER_CONSOLE_API_KEY, taken out of the environment.
+
+    Removed once read, so no command rotate.py runs inherits it.
+    """
+    key = os.environ.pop(OWNER_KEY_VAR, "").strip()
+    if not key:
+        sys.exit(
+            f"{OWNER_KEY_VAR} is not set: run under "
+            "`doppler run --project owner-session --config prd --`"
+        )
+    return key
+
+
+_record: list[Record] = []
+
+
+def record_api_for(args) -> Record:
+    """The rotation record, one client for the whole run."""
+    if not _record:
+        _record.append(
+            Record(
+                KaianoApiClient(
+                    base_url=args.api, api_key=owner_key(), user_agent=USER_AGENT
+                )
+            )
+        )
+    return _record[0]
 
 
 def actor() -> str:
@@ -635,8 +686,8 @@ def write_events(args, record: list[dict]) -> bool:
     for i, ev in enumerate(record):
         try:
             api.record(ev)
-        except record_api.ApiError as exc:
-            print(f"\nthe API did not record these rotations ({exc}):")
+        except (KaianoApiError, ValidationError) as exc:
+            print(f"\nthe API did not record these rotations ({refusal(exc)}):")
             for left in record[i:]:
                 print(f"   {events.describe(left)}")
             return False
@@ -700,8 +751,22 @@ def main() -> int:
     args.api = args.api or inv["api_base_url"]
     try:
         return dispatch(args, inv)
-    except record_api.ApiError as exc:
-        sys.exit(f"the API refused: {exc}")
+    except (KaianoApiError, ValidationError) as exc:
+        sys.exit(f"the API refused: {refusal(exc)}")
+
+
+def refusal(exc: KaianoApiError | ValidationError) -> str:
+    """Why the API said no, in one line that never quotes the key."""
+    if isinstance(exc, ValidationError):
+        # Where and why only, never the input it quotes.
+        return "; ".join(
+            f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in exc.errors()
+        )
+    if exc.status_code in (401, 403):
+        return f"{OWNER_KEY_VAR} was refused (HTTP {exc.status_code})"
+    if not exc.status_code:
+        return "the API could not be reached"
+    return f"HTTP {exc.status_code}: {exc.message}"
 
 
 def dispatch(args, inv) -> int:

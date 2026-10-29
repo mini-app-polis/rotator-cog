@@ -13,29 +13,32 @@ rotation writes Doppler and nothing else.
   value. It never holds a value.
 - The record of every rotation is kept by the API, not here: one event
   per rotation of a secret in a Doppler config, at
-  `/v1/secrets/rotation-events`. `scripts/rotate.py` writes it under your
-  own identity and reads it back to say what is due.
+  `/v1/secrets/rotation-events`. `scripts/rotate.py` writes it as the
+  machine owner-console and reads it back to say what is due.
 - `../scripts/rotate.py`: does the rotation.
 
 ## Using it
 
 ```sh
-uv run scripts/rotate.py list --due                 # what is overdue
+doppler run --project owner-session --config prd -- uv run scripts/rotate.py list --due   # what is overdue
 uv run scripts/rotate.py check                      # Doppler prd vs the inventory
-uv run scripts/rotate.py rotate OPENAI_API_KEY --reason "routine"
-uv run scripts/rotate.py rotate --kind machine-key --reason "routine" --dry-run
+doppler run --project owner-session --config prd -- uv run scripts/rotate.py rotate OPENAI_API_KEY --reason "routine"
+doppler run --project owner-session --config prd -- uv run scripts/rotate.py rotate --kind machine-key --reason "routine" --dry-run
 ```
 
 Prerequisites on the Mac: `doppler` (logged in), `aws` (profile
 `miniapppolis`), `curl`.
 
-Reading or writing the record (`list`, `rotate`, `verify`, `pg-roles`) asks
-for a Clerk session token at a hidden prompt: the API
-records the rotation as you, and a session is how a person signs in to it.
-On a page signed in to the wcs Clerk tenant, run
-`await Clerk.session.getToken()` in the browser console and paste the
-result. A token lasts about a minute, so the script asks again when the API
-says it has expired.
+Reading or writing the record (`list`, `rotate`, `verify`, `pg-roles`)
+presents `OWNER_CONSOLE_API_KEY`, the key of the machine owner-console
+(role secrets-rotator). It lives in the vault and reaches the script only
+through `doppler run` with your own Doppler login, from the `owner-session`
+project's `prd` config, since the production API keeps the record whatever
+config is rotated. It is never stored on the workstation, and rotate.py
+removes it from its environment once read, so no command it runs inherits
+it. Without it, or when the API refuses it, the script stops with a
+one-line reason. The key is in `inventory.yaml` and is rotated like every
+other machine key.
 
 Each run:
 

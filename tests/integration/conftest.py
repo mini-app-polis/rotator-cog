@@ -16,6 +16,7 @@ from collections.abc import Iterator
 
 import pytest
 import respx
+from mini_app_polis.api import client as api_client
 from wiring import API, World, ssm_client
 
 from rotator_cog import doppler, railway, worker
@@ -39,7 +40,7 @@ def world(monkeypatch: pytest.MonkeyPatch) -> Iterator[World]:
     monkeypatch.setattr(doppler, "RETRY_WAIT_SECONDS", 0)
     monkeypatch.setattr(railway, "RETRY_WAIT_SECONDS", 0)
     monkeypatch.setattr(railway, "POLL_SECONDS", 0)
-    monkeypatch.setattr(worker, "VERIFY_RETRY_SECONDS", 0)
+    monkeypatch.setattr(api_client, "_sleep", lambda seconds: None)
 
     inventory = worker.load_inventory()
     w = World(inventory)
