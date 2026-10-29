@@ -6,6 +6,12 @@ Date: 2026-10-25
 
 Accepted
 
+> **Amended (2026-10-29).** The vault is now two Doppler projects:
+> `mini-app-polis-secrets` holds every value that has to be rotated after
+> a breach, and `mini-app-polis-settings` everything else. The worker's
+> Doppler service token per config is scoped to `mini-app-polis-secrets`
+> and reaches no setting. The decision below is otherwise unchanged.
+
 ## Context
 
 Every credential the fleet holds is listed in `secrets/inventory.yaml`,

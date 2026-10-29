@@ -6,6 +6,12 @@ Date: 2026-10-25
 
 Accepted
 
+> **Amended (2026-10-29).** The sweep reads and writes
+> `mini-app-polis-secrets` only, so its drift report (step 3 below)
+> compares the inventory with a project that holds secrets alone. Settings
+> live in `mini-app-polis-settings`, outside the rotator, and are never
+> reported as drift. The decision below is otherwise unchanged.
+
 ## Context
 
 A routine rotation leaves the old key in `NAME_PREVIOUS` (ADR-0002), and

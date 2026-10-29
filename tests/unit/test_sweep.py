@@ -514,28 +514,6 @@ def test_a_consumer_not_deployed_in_a_config_is_not_checked_there(
     assert "db-poller" not in kwargs["text"]
 
 
-def test_an_exempt_entry_is_never_due_and_never_drift(posted: list) -> None:
-    """A not-rotated entry, never rotated and missing from Doppler, is neither
-    rotated nor reported; the same name in Doppler is not unknown either."""
-    inventory = {
-        **INVENTORY,
-        "secrets": {
-            "DEEJAY_COG_API_KEY": INVENTORY["secrets"]["DEEJAY_COG_API_KEY"],
-            "PUBLIC_SITE_KEY": {"kind": "not-rotated", "configs": ["prd", "dev"]},
-            "PUBLIC_OTHER_KEY": {"kind": "not-rotated", "configs": ["prd", "dev"]},
-        },
-    }
-    fake = FakeDoppler({"DEEJAY_COG_API_KEY": "d", "PUBLIC_OTHER_KEY": "public"})
-    api = FakeApi([_event("DEEJAY_COG_API_KEY", age=dt.timedelta(days=5), retired=NOW)])
-    steps = _run(fake, api, posted, inventory=inventory)
-    assert not [s for s in steps if s[0] in ("redeploy", "record")]
-    assert fake.secrets["PUBLIC_OTHER_KEY"] == "public"
-    ((args, kwargs),) = posted
-    assert "PUBLIC_SITE_KEY" not in kwargs["text"]
-    assert "PUBLIC_OTHER_KEY" not in kwargs["text"]
-    assert "WARN" not in kwargs["text"] and "issue" not in kwargs["text"].lower()
-
-
 # -- manual secrets ---------------------------------------------------------
 
 MANUAL = {

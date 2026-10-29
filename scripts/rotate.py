@@ -261,9 +261,7 @@ def cmd_list(args, inv) -> None:
     rows = []
     for name in inv["secrets"]:
         e = entry(inv, name)
-        if e["kind"] == "not-rotated" or (
-            args.tier is not None and e["tier"] != args.tier
-        ):
+        if args.tier is not None and e["tier"] != args.tier:
             continue
         cadence = inv["cadence_days"].get(e["kind"])
         for cfg in e["configs"] or ["-"]:
@@ -320,8 +318,7 @@ def cmd_check(args, inv) -> int:
         n
         for n, e in inv["secrets"].items()
         # configs: [] means held outside Doppler, so it is never stale here.
-        if e.get("kind") != "not-rotated"
-        and args.config
+        if args.config
         in (e.get("configs") if e.get("configs") is not None else ["prd"])
         and n not in names
     )
@@ -341,8 +338,7 @@ def cmd_rotate(args, inv) -> int:
         names += [
             n
             for n, e in inv["secrets"].items()
-            if e["kind"] != "not-rotated"
-            and (args.tier is None or e["tier"] == args.tier)
+            if (args.tier is None or e["tier"] == args.tier)
             and (not args.kind or e["kind"] == args.kind)
             and (
                 not args.railway_exposed
@@ -359,8 +355,6 @@ def cmd_rotate(args, inv) -> int:
         sys.exit("nothing selected")
     chosen = {n: entry(inv, n, args.config) for n in names}
     for n, e in chosen.items():
-        if e["kind"] == "not-rotated":
-            sys.exit(f"{n} is marked not-rotated")
         if e["configs"] and args.config not in e["configs"]:
             sys.exit(
                 f"{n} is not held in Doppler {args.config} (configs: {e['configs']})"

@@ -6,14 +6,11 @@ The owner declares an incident with the API (``POST
 
 1. **The list.** Every inventory entry in every config it is held in, prd
    first, then dev; tier 0 to 3 within each, then by name. ``configs: []``
-   (held outside Doppler) counts as prd. An entry with no tier (a
-   ``not-rotated`` one) goes last, as tier 3. An entry held in both configs
-   is on the list once per config.
+   (held outside Doppler) counts as prd. An entry with no tier goes last, as
+   tier 3. An entry held in both configs is on the list once per config.
 2. **Who rotates each.** The worker does (``worker``) when it would accept a
    job for it: a kind it rotates, no manual steps. Every other entry is a
-   person's (``task``): manual kinds, entries with steps, and ``not-rotated``
-   ones, whose task says to close it if the secret truly cannot be
-   invalidated.
+   person's (``task``): manual kinds and entries with steps.
 3. **Register, then act.** The list is registered with the API, which
    answers with what is already recorded for each entry, then walked in
    order: a compromised ``rotation.job`` carrying the incident id for each
@@ -50,7 +47,7 @@ from mini_app_polis.api.contract import (
 #: The configs an incident covers, in the order it covers them.
 CONFIG_ORDER = ("prd", "dev")
 
-#: The tier of an entry that names none (a not-rotated one): last.
+#: The tier of an entry that names none: last.
 UNTIERED = 3
 
 Handling = Literal["worker", "task"]
@@ -164,10 +161,6 @@ def job_for(entry: Entry, incident_id: str) -> RotationRequest:
 def why_task(entry: Mapping[str, Any]) -> str:
     """Why a person invalidates this entry rather than the worker."""
     kind = entry.get("kind")
-    if kind == "not-rotated":
-        return (
-            "rotator-cog does not rotate it: the inventory lists it as never rotated."
-        )
     if entry.get("steps"):
         return "It needs a manual step, so rotator-cog cannot rotate it itself."
     return f"Its kind ({kind}) is rotated by a person, not by rotator-cog."

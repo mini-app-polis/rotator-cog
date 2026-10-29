@@ -6,6 +6,13 @@ Date: 2026-10-29
 
 Accepted
 
+> **Amended (2026-10-29).** The inventory no longer has a `not-rotated`
+> kind. A value that never needs rotating after a breach is a setting, held
+> in `mini-app-polis-settings` outside the inventory, so an incident does
+> not cover it. Every inventory entry has a tier, and the incident list and
+> tasks below carry no `not-rotated` case. The decision below is otherwise
+> unchanged.
+
 ## Context
 
 The rotator exists so that a breach has a defined process to execute and
