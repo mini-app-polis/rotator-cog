@@ -331,6 +331,74 @@ def task_for(
     )
 
 
+def incident_task_for(
+    name: str,
+    entry: Mapping[str, Any],
+    config: str,
+    incident_id: str,
+    *,
+    why: str,
+) -> TaskCreateRequest:
+    """The task asking a person to invalidate ``name`` in ``config`` for an
+    incident: how, never a value.
+
+    ``why`` says why a person does it (the worker does not rotate its kind,
+    or the worker's job for it failed). The task's key ends in the incident
+    id, so asking again for the same incident makes no second task, and an
+    incident task and an ordinary cycle task for the secret can both be
+    open: one rotation closes both.
+    """
+    command = (
+        f"uv run scripts/rotate.py rotate {name} --compromised "
+        f"--reason incident-{incident_id}"
+    )
+    if config != "prd":
+        command += f" --config {config}"
+    kind = entry.get("kind")
+    lines = [
+        f"Rotation incident {incident_id}: every secret is being invalidated.",
+        why,
+        "",
+    ]
+    if kind == "not-rotated":
+        lines += [
+            f"The inventory lists it as never rotated: {entry.get('can', 'no reason given')}.",
+            "If it truly cannot be invalidated (public by design, an "
+            "identifier, not a credential), say so on this task and close "
+            "it; otherwise rotate it as below.",
+            "",
+        ]
+    lines += [
+        f"Run from a rotator-cog checkout: `{command}`",
+        "It prints the steps, takes the new value at a hidden prompt, writes "
+        "it where the inventory says, and records the rotation.",
+        "",
+        f"Steps: {entry.get('steps', 'see the provider console')}",
+        f"Revoke: {entry.get('revoke', 'revoke the old value at the provider')}",
+    ]
+    if entry.get("can") and kind != "not-rotated":
+        lines.append(f"What it can do: {entry['can']}")
+    return TaskCreateRequest(
+        source="secret-rotation",
+        external_id=f"secret-rotation.{config}.{name}.{incident_id}",
+        draft=TaskDraft(
+            title=f"Incident: invalidate {name} in {config}",
+            done_when=(
+                f"A rotation of {name} in {config} is recorded after the "
+                f"incident started, and the old value is revoked; or, for a "
+                "secret that cannot be invalidated, the task says why."
+            ),
+            constraints=(
+                "The new value goes in only at rotate.py's hidden prompt: "
+                "never into a chat, a ticket or a file."
+            ),
+            effort="S",
+            body="\n".join(lines),
+            labels=["person"],
+        ),
+    )
+
+
 def drift(
     names: set[str], inventory: Mapping[str, Any], config: str
 ) -> tuple[list[str], list[str]]:

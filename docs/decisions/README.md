@@ -24,3 +24,4 @@ decision), **Decision** (what change is being made), and
 - [ADR-0004: A daily sweep that retires, rotates one key and reports drift](./ADR-0004-daily-sweep.md)
 - [ADR-0005: Empty a previous slot rather than delete it](./ADR-0005-previous-slot-emptied.md)
 - [ADR-0006: Doppler delivers the GitHub copies; rotation writes Doppler alone](./ADR-0006-doppler-delivers-github-copies.md)
+- [ADR-0007: An incident invalidates every secret, in tier order, under one id](./ADR-0007-incident-invalidates-everything.md)

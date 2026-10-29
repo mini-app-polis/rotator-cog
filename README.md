@@ -20,8 +20,8 @@ in Doppler.
   Those two modules are standard library only, so rotate.py imports them
   and stays a plain `uv run` script.
 - `src/rotator_cog/worker.py`: the Lambda worker behind rotator-cog's queue
-  (declared in mini-app-polis/infra). It takes `rotation.job` and
-  `rotation.sweep` messages. A job is checked against the inventory packaged
+  (declared in mini-app-polis/infra). It takes `rotation.job`,
+  `rotation.sweep` and `rotation.incident` messages. A job is checked against the inventory packaged
   with it: machine keys, IAM access keys and provider-minted secrets, in a config the key is held
   in, and only keys that live in Doppler alone (the rest are rotated with
   rotate.py). An access key is created beside the old one, and the old one
@@ -38,8 +38,13 @@ in Doppler.
   for two hours, so it is one write and one redeploy, checked with
   siteverify. A daily sweep per config retires previous keys
   nothing uses any more, rotates the most overdue key and reports drift
-  (`src/rotator_cog/sweep.py`, and the runbook in `secrets/`). CI deploys
-  the worker after each release.
+  (`src/rotator_cog/sweep.py`, and the runbook in `secrets/`). A
+  `rotation.incident`, which the owner starts through the API, invalidates
+  every inventory secret in both configs, prd first and tier 0 first: a
+  compromised job per secret the worker rotates, sent to its own queue, and
+  a board task per secret a person rotates, all under the incident's id
+  (`src/rotator_cog/incident.py`, ADR-0007). CI deploys the worker after
+  each release.
 
 These came here from mini-app-polis/infra with their history.
 
