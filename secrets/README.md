@@ -104,7 +104,14 @@ A daily sweep per config (14:00 UTC) does the rest:
   (`ROT-`, tagged `person`) gives the `rotate.py rotate` command, the steps
   and the revoke, never a value. The sweep asks under a key naming the
   rotation the secret follows, so it gets one task until it is rotated. A
-  secret held outside Doppler is asked for by the prd sweep.
+  secret held outside Doppler is asked for by the prd sweep. One run asks
+  for at most `ROTATOR_SWEEP_TASK_LIMIT` tasks (default 3 when it is unset
+  or not a whole number of at least 1): the most overdue first (never
+  rotated, then the oldest latest rotation), then the lowest tier, then by
+  name. Every due secret beyond that is named in the run report as due but
+  not yet asked, and `manual_due` still counts them all. Asking again for a
+  task that already exists creates nothing, so at most that many are open
+  at once, and the next are asked for as those are rotated.
 - **Reports drift**, as `rotate.py check` does, in the run report.
 - **Flags changes no rotation explains.** Doppler's secrets.update webhook
   tells the API which names changed (never values). Once a change is a day

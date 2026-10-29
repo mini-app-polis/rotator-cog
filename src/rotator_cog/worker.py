@@ -188,6 +188,11 @@ SWEEP_ROTATE_VAR = "ROTATOR_SWEEP_ROTATE"
 #: "true". Unset, it reports which are due, so the first ask can be checked.
 SWEEP_TASKS_VAR = "ROTATOR_SWEEP_TASKS"
 
+#: The most manual-rotation tasks one sweep asks for, most overdue first.
+#: Unset or not a whole number of at least 1, it is
+#: ``sweep.TASK_LIMIT_DEFAULT``.
+SWEEP_TASK_LIMIT_VAR = "ROTATOR_SWEEP_TASK_LIMIT"
+
 #: How long Railway may take to show a value Doppler has written, and a
 #: redeploy to be running. Each phase waits for both, so the function's
 #: timeout in mini-app-polis/infra covers two of each.
@@ -1162,10 +1167,23 @@ def run_sweep(
                 )
                 break
 
-        # 3. A task for each due manual secret: a person rotates it.
-        manual = sweep_mod.manual_due(inventory, latest, config, now=at)
+        # 3. A task for each of the most overdue manual secrets, up to the
+        # limit: a person rotates it.
+        manual = sweep_mod.most_overdue_first(
+            sweep_mod.manual_due(inventory, latest, config, now=at)
+        )
         report.count("manual_due", len(manual))
         asking = os.environ.get(SWEEP_TASKS_VAR, "").strip().lower() == "true"
+        limit = sweep_mod.task_limit(os.environ.get(SWEEP_TASK_LIMIT_VAR))
+        if asking and len(manual) > limit:
+            # One line naming them all: past the limit, the report keeps only
+            # the first few items of a reason.
+            held = ", ".join(due.name for due in manual[limit:])
+            report.notice(
+                f"manual secrets due, task not yet asked (a sweep asks for {limit})",
+                f"{held} in {config}",
+            )
+            manual = manual[:limit]
         for due in manual:
             label = f"{due.name} in {config}"
             if not asking:

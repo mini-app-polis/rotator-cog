@@ -28,7 +28,12 @@ Infra's schedule sends one ``rotation.sweep`` per config each day. A sweep:
    the steps and the revoke, never a value. The task's key names the
    rotation it follows, so a daily sweep asks for the same task until the
    secret is rotated. A secret held outside Doppler (``configs: []``) is
-   asked for by the prd sweep.
+   asked for by the prd sweep. One run asks for at most the task limit
+   (``ROTATOR_SWEEP_TASK_LIMIT``, default 3): the most overdue first (never
+   rotated, then the oldest latest rotation), then the lowest tier, then by
+   name. The rest are reported as due but not yet asked. Asking again for a
+   task that exists creates nothing, so at most that many are open at once,
+   and the next are asked for as those are rotated.
 4. **Reports drift**: names in Doppler that look secret and have no
    inventory entry, and inventory entries the config should hold but does
    not, as ``scripts/rotate.py check`` does.
@@ -237,6 +242,38 @@ class ManualDue:
     #: ``failed-<date>``.
     cycle: str
     why: str
+    #: When its latest rotation was minted; None when it never was.
+    last: datetime | None = None
+    #: Its inventory tier; an entry that names none counts as the last tier.
+    tier: int = 3
+
+
+#: How many manual-rotation tasks one sweep asks for when the setting is
+#: unset or not a whole number of at least 1.
+TASK_LIMIT_DEFAULT = 3
+
+
+def task_limit(raw: str | None) -> int:
+    """How many manual-rotation tasks one sweep asks for, from the setting."""
+    try:
+        limit = int((raw or "").strip())
+    except ValueError:
+        return TASK_LIMIT_DEFAULT
+    return limit if limit >= 1 else TASK_LIMIT_DEFAULT
+
+
+def most_overdue_first(due: Iterable[ManualDue]) -> list[ManualDue]:
+    """``due`` in the order the sweep asks for tasks.
+
+    Never rotated first, then the oldest latest rotation, then the lowest
+    tier, then by name.
+    """
+
+    def order(d: ManualDue) -> tuple[bool, float, int, str]:
+        minted = d.last.timestamp() if d.last is not None else 0.0
+        return (d.last is not None, minted, d.tier, d.name)
+
+    return sorted(due, key=order)
 
 
 def held_for_sweep(entry: Mapping[str, Any], config: str) -> bool:
@@ -265,9 +302,15 @@ def manual_due(
         if entry.get("kind") != "manual" or not held_for_sweep(entry, config):
             continue
         last = latest.get(name)
+        tier = int(entry.get("tier", 3))
         if last is None:
             out.append(
-                ManualDue(name, "never", "It has never been recorded as rotated.")
+                ManualDue(
+                    name,
+                    "never",
+                    "It has never been recorded as rotated.",
+                    tier=tier,
+                )
             )
         elif last.verification == "failed":
             day = last.minted.date().isoformat()
@@ -276,6 +319,8 @@ def manual_due(
                     name,
                     f"failed-{day}",
                     f"Its rotation of {day} was recorded as failed.",
+                    last=last.minted,
+                    tier=tier,
                 )
             )
         elif now - last.minted >= cadence:
@@ -286,6 +331,8 @@ def manual_due(
                     f"after-{day}",
                     f"It was last rotated on {day}, and is due every "
                     f"{cadence.days} days.",
+                    last=last.minted,
+                    tier=tier,
                 )
             )
     return out
