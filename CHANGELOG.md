@@ -1,3 +1,16 @@
+# [1.15.0](https://github.com/mini-app-polis/rotator-cog/compare/v1.14.0...v1.15.0) (2026-10-29)
+
+
+### Bug Fixes
+
+* **deps:** bump miniapppolis-common-utils to 7.1.1 ([6330668](https://github.com/mini-app-polis/rotator-cog/commit/6330668d47f367daf282f2532c4bee8124a527fc))
+
+
+### Features
+
+* **inventory:** rotate in mini-app-polis-secrets and drop the not-rotated kind ([f057d4e](https://github.com/mini-app-polis/rotator-cog/commit/f057d4ea1ce541d3ca716a1eaf3f5c7a44255bb1))
+* **inventory:** rotate the claude-session and owner-console machine keys ([9d1e9c7](https://github.com/mini-app-polis/rotator-cog/commit/9d1e9c7a6c3915413b67f04a2a137ba4bce5e474))
+
 # [1.14.0](https://github.com/mini-app-polis/rotator-cog/compare/v1.13.3...v1.14.0) (2026-10-29)
 
 
