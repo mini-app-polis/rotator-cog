@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import re
 from typing import Any
 
 import httpx
@@ -242,6 +243,7 @@ class FakeApi:
         self.events_ = events
         self.last = last
         self.asked: list[Any] = []
+        self.updates: list[Any] = []
         self.reported = reported or []
         self.all_events = all_events
         self.change_reads: list[Any] = []
@@ -254,6 +256,9 @@ class FakeApi:
 
     def request_task(self, request: Any) -> None:
         self.asked.append(request)
+
+    def update_task(self, request: Any) -> None:
+        self.updates.append(request)
 
     def events(self, config: str) -> list[RotationEvent]:
         return self.all_events if self.all_events is not None else self.events_
@@ -672,6 +677,131 @@ def test_a_refused_task_request_is_reported_and_the_sweep_goes_on(
     _run(fake, api, posted)
     ((args, kwargs),) = posted
     assert "rotation task not asked for" in kwargs["text"]
+    assert "NEW_TOKEN" in kwargs["text"]  # drift still reported after it
+
+
+# -- a manual secret's rotation, sent to its task ---------------------------
+
+#: The first line the task manager reads the rotation's time from.
+ROTATED_LINE = re.compile(r"Rotated (\S+); verification (?:ok|failed|unchecked)")
+
+
+@pytest.mark.parametrize("verification", ["ok", "unchecked"])
+def test_an_update_names_the_secret_by_prefix_with_one_rotated_line(
+    verification: str,
+) -> None:
+    event = _manual_event("BREVO_API_KEY", age_days=3, verification=verification)
+    update = sweep.update_for(event, "prd")
+    assert update.external_id == "secret-rotation.prd.BREVO_API_KEY."
+    assert update.section == "Review"
+    assert update.comment == (
+        f"Rotated {event.minted.isoformat()}; verification {verification}"
+    )
+    match = ROTATED_LINE.fullmatch(update.comment)
+    assert match and dt.datetime.fromisoformat(match.group(1)) == event.minted
+
+
+def test_a_failed_rotation_update_names_the_task_that_follows_it() -> None:
+    event = _manual_event("BREVO_API_KEY", age_days=5, verification="failed")
+    update = sweep.update_for(event, "dev")
+    first, second = update.comment.splitlines()
+    assert first == f"Rotated {event.minted.isoformat()}; verification failed"
+    assert ROTATED_LINE.fullmatch(first)
+    assert "secret-rotation.dev.BREVO_API_KEY.failed-2026-10-20" in second
+    assert update.section == "Review"
+    # The key named is the one the sweep asks for the failed rotation under.
+    (due,) = [
+        d
+        for d in sweep.manual_due(MANUAL, {"BREVO_API_KEY": event}, "prd", now=NOW)
+        if d.name == "BREVO_API_KEY"
+    ]
+    assert f".{due.cycle}" in second
+
+
+def test_updates_are_for_the_configs_manual_secrets_with_a_rotation() -> None:
+    latest = {
+        n: _manual_event(n, age_days=10)
+        for n in ("BREVO_API_KEY", "DEEJAYTOOLS_CLERK_SECRET_KEY", "TICK_SECRET")
+    }
+    prd = sweep.rotation_updates(MANUAL, latest, "prd")
+    assert [(n, u.external_id) for n, u in prd] == [
+        ("BREVO_API_KEY", "secret-rotation.prd.BREVO_API_KEY."),
+        (
+            "DEEJAYTOOLS_CLERK_SECRET_KEY",
+            "secret-rotation.prd.DEEJAYTOOLS_CLERK_SECRET_KEY.",
+        ),
+    ]
+    dev = sweep.rotation_updates(MANUAL, latest, "dev")
+    assert [n for n, _ in dev] == ["DEEJAYTOOLS_CLERK_SECRET_KEY"]
+
+
+def _rotated_manual_api(**manual_ages: int) -> FakeApi:
+    return FakeApi(
+        [
+            _event("DEEJAY_COG_API_KEY", age=dt.timedelta(days=5), retired=NOW),
+            _event("WATCHER_COG_API_KEY", age=dt.timedelta(days=5), retired=NOW),
+            *(_manual_event(n, age_days=a) for n, a in manual_ages.items()),
+        ]
+    )
+
+
+ROTATED_INVENTORY = {
+    **INVENTORY,
+    "secrets": {**INVENTORY["secrets"], "BREVO_API_KEY": {"kind": "manual"}},
+}
+
+
+def test_a_sweep_sends_each_manual_secrets_latest_rotation_every_day(
+    posted: list, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(worker.SWEEP_TASKS_VAR, "true")
+    fake = FakeDoppler({"DEEJAY_COG_API_KEY": "d", "WATCHER_COG_API_KEY": "w"})
+    first = _rotated_manual_api(OPENAI_API_KEY=30, BREVO_API_KEY=2)
+    second = _rotated_manual_api(OPENAI_API_KEY=30, BREVO_API_KEY=2)
+    _run(fake, first, posted, inventory=ROTATED_INVENTORY)
+    _run(fake, second, posted, inventory=ROTATED_INVENTORY)
+    assert [u.external_id for u in first.updates] == [
+        "secret-rotation.prd.BREVO_API_KEY.",
+        "secret-rotation.prd.OPENAI_API_KEY.",
+    ]
+    assert second.updates == first.updates
+    assert first.asked == []
+    assert "rotation update sent" in posted[0][1]["text"]
+
+
+def test_with_tasks_off_no_update_is_sent(
+    posted: list, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(worker.SWEEP_TASKS_VAR, raising=False)
+    fake = FakeDoppler({"DEEJAY_COG_API_KEY": "d", "WATCHER_COG_API_KEY": "w"})
+    api = _rotated_manual_api(OPENAI_API_KEY=30)
+    _run(fake, api, posted)
+    assert api.updates == []
+
+
+@pytest.mark.parametrize("status", [403, 502])
+def test_an_update_not_sent_is_reported_and_the_rest_go_on(
+    posted: list, monkeypatch: pytest.MonkeyPatch, status: int
+) -> None:
+    monkeypatch.setenv(worker.SWEEP_TASKS_VAR, "true")
+    fake = FakeDoppler(
+        {"DEEJAY_COG_API_KEY": "d", "WATCHER_COG_API_KEY": "w", "NEW_TOKEN": "x"}
+    )
+    api = _rotated_manual_api(OPENAI_API_KEY=30, BREVO_API_KEY=2)
+    sent: list[Any] = []
+
+    def refuse_brevo(request: Any) -> None:
+        if ".BREVO_API_KEY." in request.external_id:
+            raise RuntimeError(f"the API answered {status}")
+        sent.append(request)
+
+    api.update_task = refuse_brevo  # type: ignore[method-assign]
+    _run(fake, api, posted, inventory=ROTATED_INVENTORY)
+    assert [u.external_id for u in sent] == ["secret-rotation.prd.OPENAI_API_KEY."]
+    ((args, kwargs),) = posted
+    assert "rotation update not sent" in kwargs["text"]
+    assert "BREVO_API_KEY in prd" in kwargs["text"]
+    assert str(status) in kwargs["text"]
     assert "NEW_TOKEN" in kwargs["text"]  # drift still reported after it
 
 

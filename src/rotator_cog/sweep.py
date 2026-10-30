@@ -34,6 +34,15 @@ Infra's schedule sends one ``rotation.sweep`` per config each day. A sweep:
    name. The rest are reported as due but not yet asked. Asking again for a
    task that exists creates nothing, so at most that many are open at once,
    and the next are asked for as those are rotated.
+
+   Each manual secret it looks after that has a latest rotation is also
+   sent to its task as an update, every day: under the key prefix
+   ``secret-rotation.<config>.<name>.``, to Review, with the comment
+   ``Rotated <ISO timestamp>; verification <ok|failed|unchecked>`` and, for
+   a failed rotation, a second line naming the task that follows it. The
+   task manager acts only on an open task created before the rotation, so
+   a repeat changes nothing; an update that is not sent is reported and
+   sent again by the next sweep.
 4. **Reports drift**: names in Doppler that look secret and have no
    inventory entry, and inventory entries the config should hold but does
    not, as ``scripts/rotate.py check`` does.
@@ -64,6 +73,7 @@ from mini_app_polis.api.contract import (
     SecretChange,
     TaskCreateRequest,
     TaskDraft,
+    TaskUpdateRequest,
 )
 
 from . import doppler as doppler_mod
@@ -119,6 +129,10 @@ class SweepApi(Protocol):
         """Ask the task manager for one task; asking again makes no second."""
         ...
 
+    def update_task(self, request: TaskUpdateRequest) -> None:
+        """Send the task manager an update to a task it created."""
+        ...
+
     def events(self, config: str) -> list[RotationEvent]:
         """The rotation events in ``config``, newest minted first."""
         ...
@@ -144,6 +158,11 @@ class _Api:
 
     def request_task(self, request: TaskCreateRequest) -> None:
         self._client.request_task(request)
+
+    def update_task(self, request: TaskUpdateRequest) -> None:
+        self._client.post(
+            "/v1/tasks/updates", request.model_dump(mode="json", exclude_unset=True)
+        )
 
     def events(self, config: str) -> list[RotationEvent]:
         return self._client.list_rotation_events(config=config)  # type: ignore[arg-type]
@@ -376,6 +395,45 @@ def task_for(
             labels=["person"],
         ),
     )
+
+
+#: The column a rotated secret's task moves to.
+ROTATED_SECTION = "Review"
+
+
+def update_for(event: RotationEvent, config: str) -> TaskUpdateRequest:
+    """The update telling a secret's task that ``event`` rotated it.
+
+    The key is a prefix naming the secret, not one cycle: the task manager
+    finds the secret's open task under it. The comment holds the rotation's
+    time and verification and, for a failed rotation, the key of the task
+    that follows it; never a value.
+    """
+    prefix = f"secret-rotation.{config}.{event.name}."
+    lines = [f"Rotated {event.minted.isoformat()}; verification {event.verification}"]
+    if event.verification == "failed":
+        day = event.minted.date().isoformat()
+        lines.append(f"The rotation failed; {prefix}failed-{day} follows it.")
+    return TaskUpdateRequest(
+        external_id=prefix, comment="\n".join(lines), section=ROTATED_SECTION
+    )
+
+
+def rotation_updates(
+    inventory: Mapping[str, Any],
+    latest: Mapping[str, RotationEvent],
+    config: str,
+) -> list[tuple[str, TaskUpdateRequest]]:
+    """(Name, update) for each manual secret ``config``'s sweep looks after
+    that has a latest rotation, by name."""
+    out: list[tuple[str, TaskUpdateRequest]] = []
+    for name, entry in sorted(inventory["secrets"].items()):
+        if entry.get("kind") != "manual" or not held_for_sweep(entry, config):
+            continue
+        last = latest.get(name)
+        if last is not None:
+            out.append((name, update_for(last, config)))
+    return out
 
 
 def incident_task_for(

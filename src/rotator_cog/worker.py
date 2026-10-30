@@ -183,8 +183,9 @@ ACCEPTING_SERVICE = "api-kaianolevine-com"
 #: sweep's own rotations can wait until a rotation has been proven by hand.
 SWEEP_ROTATE_VAR = "ROTATOR_SWEEP_ROTATE"
 
-#: The sweep asks for a task per due manual secret only when this is
-#: "true". Unset, it reports which are due, so the first ask can be checked.
+#: The sweep asks for a task per due manual secret, and sends each manual
+#: secret's latest rotation to its task, only when this is "true". Unset, it
+#: reports which are due, so the first ask can be checked.
 SWEEP_TASKS_VAR = "ROTATOR_SWEEP_TASKS"
 
 #: The most manual-rotation tasks one sweep asks for, most overdue first.
@@ -1202,6 +1203,20 @@ def run_sweep(
                 )
                 continue
             report.note("rotation task asked for", label)
+
+        # Each manual secret's latest rotation, to its task: the task manager
+        # moves the open task to Review when the rotation is newer than it.
+        if asking:
+            for name, update in sweep_mod.rotation_updates(inventory, latest, config):
+                label = f"{name} in {config}"
+                try:
+                    api.update_task(update)
+                except Exception as exc:  # noqa: BLE001 — one refusal must not stop the rest
+                    report.issue(
+                        "rotation update not sent", label, detail=str(exc)[:500]
+                    )
+                    continue
+                report.note("rotation update sent", label)
 
         # 4. Drift between Doppler and the inventory.
         unknown, missing = sweep_mod.drift(store.names(), inventory, config)
