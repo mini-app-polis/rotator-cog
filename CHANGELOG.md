@@ -1,3 +1,10 @@
+# [1.16.0](https://github.com/mini-app-polis/rotator-cog/compare/v1.15.2...v1.16.0) (2026-10-30)
+
+
+### Features
+
+* **sweep:** send each manual secret's latest rotation to its task as an update ([e3305ec](https://github.com/mini-app-polis/rotator-cog/commit/e3305ec9a3f9849dbb3caa17b9ac4d822a5cdfc6))
+
 ## [1.15.2](https://github.com/mini-app-polis/rotator-cog/compare/v1.15.1...v1.15.2) (2026-10-30)
 
 
