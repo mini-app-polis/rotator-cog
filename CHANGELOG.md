@@ -1,3 +1,10 @@
+## [1.17.1](https://github.com/mini-app-polis/rotator-cog/compare/v1.17.0...v1.17.1) (2026-10-30)
+
+
+### Bug Fixes
+
+* **rotate:** check a dev machine key against the inventory's dev API URL, not one the secrets project no longer holds ([5ec3341](https://github.com/mini-app-polis/rotator-cog/commit/5ec334141ad4ebadcdaf229250336247823c56d7))
+
 # [1.17.0](https://github.com/mini-app-polis/rotator-cog/compare/v1.16.1...v1.17.0) (2026-10-30)
 
 
