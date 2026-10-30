@@ -235,11 +235,9 @@ def machine_name(var: str) -> str:
 
 
 def machine_verify(inv: dict, var: str, config: str) -> str:
-    base = (
-        inv["api_base_url"]
-        if config == "prd"
-        else "${KAIANO_API_BASE_URL_DEV:-$KAIANO_API_BASE_URL}"
-    )
+    # From the inventory, not the environment: the check runs under the
+    # secrets project, which holds no settings such as the API's URL.
+    base = inv["api_base_url"] if config == "prd" else inv["api_base_url_dev"]
     return (
         f'curl -fsS -A {USER_AGENT} -H "Authorization: Bearer ${var}" '
         f'"{base}/v1/identity/whoami" | grep -q \'"{machine_name(var)}"\''
