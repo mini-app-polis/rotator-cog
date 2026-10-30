@@ -1,3 +1,10 @@
+# [1.17.0](https://github.com/mini-app-polis/rotator-cog/compare/v1.16.1...v1.17.0) (2026-10-30)
+
+
+### Features
+
+* **secrets:** add TASK_MANAGER_SWEEP_API_KEY, the sweep-now workflow's machine key ([127b1e1](https://github.com/mini-app-polis/rotator-cog/commit/127b1e19983fd3204a910477e37e762d4f8b36f9))
+
 ## [1.16.1](https://github.com/mini-app-polis/rotator-cog/compare/v1.16.0...v1.16.1) (2026-10-30)
 
 
