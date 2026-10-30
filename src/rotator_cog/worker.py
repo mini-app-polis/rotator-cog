@@ -360,9 +360,12 @@ def machine_verifier(inventory: Mapping[str, Any]) -> Verifier:
         if not value:
             # KaianoApiClient falls back to the environment's key without one.
             return "no key to check"
+        # Named for the machine whose key is under check; the explicit
+        # api_key is what is presented, so machine_name resolves nothing.
         client = KaianoApiClient(
             base_url=bases[config],
             api_key=value,
+            machine_name=machine,
             timeout=VERIFY_TIMEOUT_SECONDS,
             user_agent=USER_AGENT,
         )
