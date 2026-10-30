@@ -1,3 +1,10 @@
+## [1.15.1](https://github.com/mini-app-polis/rotator-cog/compare/v1.15.0...v1.15.1) (2026-10-30)
+
+
+### Bug Fixes
+
+* **worker:** name the machine on the whoami check and list ROTATOR_JOBS_QUEUE_URL ([9a548b0](https://github.com/mini-app-polis/rotator-cog/commit/9a548b0e34caf9f694bbb8c56bb73ced99e18c3d))
+
 # [1.15.0](https://github.com/mini-app-polis/rotator-cog/compare/v1.14.0...v1.15.0) (2026-10-29)
 
 
