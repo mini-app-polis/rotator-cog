@@ -1,3 +1,11 @@
+## [1.17.2](https://github.com/mini-app-polis/rotator-cog/compare/v1.17.1...v1.17.2) (2026-10-31)
+
+
+### Bug Fixes
+
+* **deps:** bump miniapppolis-common-utils to 7.7.0 ([e3745c1](https://github.com/mini-app-polis/rotator-cog/commit/e3745c1d78f04abd1041f020ea044fc056c9cf48))
+* **deps:** patch vulnerable dependencies (pyasn1) ([6b5cf4b](https://github.com/mini-app-polis/rotator-cog/commit/6b5cf4be8504e709ac18751c0b9cf6f5739a8cab))
+
 ## [1.17.1](https://github.com/mini-app-polis/rotator-cog/compare/v1.17.0...v1.17.1) (2026-10-30)
 
 
