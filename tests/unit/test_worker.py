@@ -822,6 +822,31 @@ def test_the_handler_names_everything_when_settings_cannot_load(
     ]
 
 
+def test_the_handler_logs_its_effective_settings_once(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    hidden = "acct-not-on-the-allowlist"
+    monkeypatch.setenv(
+        "SETTINGS_ALLOWLIST", "ROTATOR_SWEEP_ROTATE,ROTATOR_SWEEP_TASK_LIMIT"
+    )
+    monkeypatch.setenv("ROTATOR_SWEEP_ROTATE", "true")
+    monkeypatch.delenv("ROTATOR_SWEEP_TASK_LIMIT", raising=False)
+    monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", hidden)
+    monkeypatch.setattr(worker, "_settings_logged", False)
+    monkeypatch.setattr(worker, "load_secrets", lambda refresh: [])
+    event: dict[str, Any] = {"Records": []}
+    with caplog.at_level("INFO", logger="mini_app_polis"):
+        worker.lambda_handler(event, None)
+        worker.lambda_handler(event, None)
+    lines = [r.getMessage() for r in caplog.records]
+    limit = worker.sweep_mod.TASK_LIMIT_DEFAULT
+    assert lines.count("ROTATOR_SWEEP_ROTATE=True (set)") == 1
+    assert lines.count(f"ROTATOR_SWEEP_TASK_LIMIT={limit} (default)") == 1
+    assert lines.count("CLOUDFLARE_ACCOUNT_ID (set)") == 1
+    assert all(hidden not in r.getMessage() for r in caplog.records)
+    assert hidden not in caplog.text
+
+
 def test_a_token_put_with_a_trailing_newline_is_read_without_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

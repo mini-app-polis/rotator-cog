@@ -107,6 +107,7 @@ from mini_app_polis.api.contract import (
     RotationRequest,
     RotationSweepMessage,
 )
+from mini_app_polis.environment import log_settings
 from mini_app_polis.lambda_worker import (
     UnprocessableMessage,
     all_failed,
@@ -1136,7 +1137,7 @@ def run_sweep(
         for name in failed:
             report.issue("last rotation failed; needs a person", f"{name} in {config}")
         report.count("due", len(overdue))
-        rotating = os.environ.get(SWEEP_ROTATE_VAR, "").strip().lower() == "true"
+        rotating = _switched_on(SWEEP_ROTATE_VAR)
         if overdue and not rotating:
             report.note(f"due, not rotated: {SWEEP_ROTATE_VAR} is off", overdue[0])
         if overdue and not ready and rotating:
@@ -1176,7 +1177,7 @@ def run_sweep(
             sweep_mod.manual_due(inventory, latest, config, now=at)
         )
         report.count("manual_due", len(manual))
-        asking = os.environ.get(SWEEP_TASKS_VAR, "").strip().lower() == "true"
+        asking = _switched_on(SWEEP_TASKS_VAR)
         limit = sweep_mod.task_limit(os.environ.get(SWEEP_TASK_LIMIT_VAR))
         if asking and len(manual) > limit:
             # One line naming them all: past the limit, the report keeps only
@@ -1389,6 +1390,40 @@ def _report_unprocessable(exc: BaseException, run_id: str) -> None:
         log.exception("worker: could not report the unprocessable message")
 
 
+def _switched_on(var: str) -> bool:
+    """Whether a sweep switch is on: the variable is "true", any case."""
+    return os.environ.get(var, "").strip().lower() == "true"
+
+
+def effective_settings() -> dict[str, Any]:
+    """The settings this worker reads, each as it resolves it, defaults applied.
+
+    Handed to ``log_settings``, which shows a value only for a name in
+    SETTINGS_ALLOWLIST; any other name is shown as set or unset.
+    """
+    names = [
+        JOBS_QUEUE_URL_VAR,
+        *TOKEN_PARAMETER_VARS.values(),
+        *RAILWAY_TOKEN_PARAMETER_VARS.values(),
+        TURNSTILE_TOKEN_PARAMETER_VAR,
+        CLOUDFLARE_ACCOUNT_VAR,
+        TURNSTILE_SITEKEY_VAR,
+    ]
+    settings: dict[str, Any] = {
+        name: os.environ.get(name, "").strip() for name in names
+    }
+    settings[SWEEP_ROTATE_VAR] = _switched_on(SWEEP_ROTATE_VAR)
+    settings[SWEEP_TASKS_VAR] = _switched_on(SWEEP_TASKS_VAR)
+    settings[SWEEP_TASK_LIMIT_VAR] = sweep_mod.task_limit(
+        os.environ.get(SWEEP_TASK_LIMIT_VAR)
+    )
+    return settings
+
+
+#: Set once the effective settings are logged: once per cold start.
+_settings_logged = False
+
+
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     """Run each record. Never raises.
 
@@ -1400,6 +1435,11 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     except Exception:  # noqa: BLE001 — nothing can run without its settings
         log.exception("worker: could not refresh settings from SSM")
         return all_failed(event)
+
+    global _settings_logged
+    if not _settings_logged:
+        log_settings(effective_settings())
+        _settings_logged = True
 
     def handle(record: dict[str, Any]) -> None:
         message_id = str(record.get("messageId") or "")
