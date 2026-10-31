@@ -1,3 +1,15 @@
+# [1.18.0](https://github.com/mini-app-polis/rotator-cog/compare/v1.17.2...v1.18.0) (2026-10-31)
+
+
+### Bug Fixes
+
+* **deps:** bump miniapppolis-common-utils to 7.8.0 ([ed3cc38](https://github.com/mini-app-polis/rotator-cog/commit/ed3cc38b86a56dc35917efd541fbef5d450c247a))
+
+
+### Features
+
+* **worker:** log effective settings once at cold start with the shared helper ([d84cc31](https://github.com/mini-app-polis/rotator-cog/commit/d84cc31b66fdde37e5845b5b5830ea3a8146371b))
+
 ## [1.17.2](https://github.com/mini-app-polis/rotator-cog/compare/v1.17.1...v1.17.2) (2026-10-31)
 
 
