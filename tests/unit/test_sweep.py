@@ -1057,6 +1057,52 @@ def test_names_written_with_a_secret_are_explained_over_its_handover(
     assert sweep.unexplained([change], stale, CHANGE_INVENTORY) == [change]
 
 
+@pytest.mark.parametrize(
+    "name",
+    ["DEEJAY_COG_API_KEY", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY_MIRROR"],
+)
+def test_an_added_name_held_no_value_and_is_not_judged(name: str) -> None:
+    """A secret created, or moved into a new vault, has no rotation to match."""
+    change = _change(name, change="added")
+    assert sweep.unexplained([change], [], CHANGE_INVENTORY) == []
+
+
+def test_an_added_previous_slot_with_no_explanation_is_judged() -> None:
+    """A previous slot is a second key the consumers accept."""
+    change = _change("DEEJAY_COG_API_KEY_PREVIOUS", change="added")
+    assert sweep.unexplained([change], [], CHANGE_INVENTORY) == [change]
+
+
+def test_an_added_previous_slot_is_explained_by_its_secret_added_near_it() -> None:
+    secret = _change("DEEJAY_COG_API_KEY", change="added")
+    slot = _change(
+        "DEEJAY_COG_API_KEY_PREVIOUS",
+        change="added",
+        at=secret.changed_at + dt.timedelta(minutes=4),
+    )
+    assert sweep.unexplained([secret, slot], [], CHANGE_INVENTORY) == []
+    late = _change(
+        "DEEJAY_COG_API_KEY_PREVIOUS",
+        change="added",
+        at=secret.changed_at + dt.timedelta(hours=3),
+    )
+    assert sweep.unexplained([secret, late], [], CHANGE_INVENTORY) == [late]
+
+
+def test_an_added_previous_slot_is_explained_by_a_rotation_over_its_handover() -> None:
+    slot = _change("DEEJAY_COG_API_KEY_PREVIOUS", change="added")
+    events = [_minted("DEEJAY_COG_API_KEY", slot.changed_at - dt.timedelta(days=1))]
+    assert sweep.unexplained([slot], events, CHANGE_INVENTORY) == []
+
+
+def test_an_update_to_an_added_secret_is_still_judged() -> None:
+    added = _change("DEEJAY_COG_API_KEY", change="added")
+    updated = _change(
+        "DEEJAY_COG_API_KEY", at=added.changed_at + dt.timedelta(minutes=10)
+    )
+    assert sweep.unexplained([added, updated], [], CHANGE_INVENTORY) == [updated]
+
+
 def test_a_name_the_inventory_does_not_list_is_left_to_drift() -> None:
     assert sweep.unexplained([_change("SOME_SETTING")], [], CHANGE_INVENTORY) == []
 
