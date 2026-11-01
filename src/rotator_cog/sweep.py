@@ -52,10 +52,15 @@ Infra's schedule sends one ``rotation.sweep`` per config each day. A sweep:
    change to an inventory secret is explained by a rotation of it minted
    from two hours before the change to five minutes after; a change to its
    ``_PREVIOUS`` slot, or to a name written with it (its key id, its
-   copies), by its rotation in the eight days before. A change nothing
-   explains was made outside the rotation process: it is reported, and one
-   task asks a person to record it with rotate.py or revert it. Names only;
-   no value is ever read.
+   copies), by its rotation in the eight days before. A name *added* to a
+   config held no value before, so its addition changes nothing in use: an
+   added secret, key id or copy is never judged. An added ``_PREVIOUS``
+   slot is a second key the secret's consumers accept, so it is judged,
+   and is also explained by its secret being added within two hours of it
+   (the two set up together, as when a secret is created or a vault is
+   moved). A change nothing explains was made outside the rotation
+   process: it is reported, and one task asks a person to record it with
+   rotate.py or revert it. Names only; no value is ever read.
 """
 
 from __future__ import annotations
@@ -544,16 +549,35 @@ def unexplained(
     events: Iterable[RotationEvent],
     inventory: Mapping[str, Any],
 ) -> list[SecretChange]:
-    """The changes to inventory names that no recorded rotation explains."""
+    """The changes to inventory names that no recorded rotation explains.
+
+    ``changes`` are one config's. An added name held no value before, so
+    only an added ``_PREVIOUS`` slot (a second accepted key) is judged, and
+    its secret's own addition near it explains it as well as a rotation.
+    """
+    changes = list(changes)
     minted: dict[str, list[datetime]] = {}
     for event in events:
         minted.setdefault(event.name, []).append(event.minted)
+    added: dict[str, list[datetime]] = {}
+    for change in changes:
+        if change.change == "added":
+            added.setdefault(change.name, []).append(change.changed_at)
     out: list[SecretChange] = []
     for change in changes:
         owner = owner_of(change.name, inventory)
         if owner is None:
             continue
         secret, itself = owner
+        previous_slot = change.name == doppler_mod.previous_name(secret)
+        if change.change == "added":
+            if not previous_slot:
+                continue
+            if any(
+                abs(change.changed_at - at) <= EXPLAINED_BEFORE
+                for at in added.get(secret, [])
+            ):
+                continue
         before = EXPLAINED_BEFORE if itself else HANDOVER_EXPLAINS
         earliest = change.changed_at - before
         latest = change.changed_at + EXPLAINED_AFTER
