@@ -1,3 +1,10 @@
+## [1.18.2](https://github.com/mini-app-polis/rotator-cog/compare/v1.18.1...v1.18.2) (2026-11-01)
+
+
+### Bug Fixes
+
+* **sweep:** judge an added secret only when it is a previous slot nothing explains ([8148f5c](https://github.com/mini-app-polis/rotator-cog/commit/8148f5c9d4771c0045df5d3fff1c3d24706c2085))
+
 ## [1.18.1](https://github.com/mini-app-polis/rotator-cog/compare/v1.18.0...v1.18.1) (2026-11-01)
 
 
