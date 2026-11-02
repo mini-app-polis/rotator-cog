@@ -1,3 +1,11 @@
+## [1.18.4](https://github.com/mini-app-polis/rotator-cog/compare/v1.18.3...v1.18.4) (2026-11-02)
+
+
+### Bug Fixes
+
+* **deps:** bump miniapppolis-common-utils to 7.8.3 ([59df5a7](https://github.com/mini-app-polis/rotator-cog/commit/59df5a7861f10b5731d8ddc480a0244f541e7996))
+* **inventory:** DB_DRILL_RAILWAY_TOKEN is a workspace token, with a verify check ([6fd7941](https://github.com/mini-app-polis/rotator-cog/commit/6fd79410a8db0ecd14ebf0c11bd117046b4aab38))
+
 ## [1.18.3](https://github.com/mini-app-polis/rotator-cog/compare/v1.18.2...v1.18.3) (2026-11-01)
 
 
