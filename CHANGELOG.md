@@ -1,3 +1,10 @@
+# [1.19.0](https://github.com/mini-app-polis/rotator-cog/compare/v1.18.6...v1.19.0) (2026-11-03)
+
+
+### Features
+
+* **inventory:** add the infra read and write GitHub App private keys ([ef405ca](https://github.com/mini-app-polis/rotator-cog/commit/ef405ca0e664bc4c0c8243d9c5c5aceebeec4d41))
+
 ## [1.18.6](https://github.com/mini-app-polis/rotator-cog/compare/v1.18.5...v1.18.6) (2026-11-03)
 
 
