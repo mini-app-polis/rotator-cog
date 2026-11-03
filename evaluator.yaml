@@ -3,6 +3,10 @@
 
 type: pipeline-cog
 
+layout_exceptions:
+  - path: secrets
+    reason: "The fleet's credential inventory (secrets/inventory.yaml) and its README: every secret by name and how it rotates, never a value. scripts/rotate.py reads it; only the rotator rotates secrets."
+
 # A queue-driven Lambda worker, like the other pipeline cogs: its queue and
 # dead-letter queue, the function, the event source mapping, the schedule
 # and the alarms are declared in mini-app-polis/infra.
