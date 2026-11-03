@@ -1,3 +1,10 @@
+# [1.20.0](https://github.com/mini-app-polis/rotator-cog/compare/v1.19.0...v1.20.0) (2026-11-03)
+
+
+### Features
+
+* **inventory:** add the infra-apply machine key ([3bb7b15](https://github.com/mini-app-polis/rotator-cog/commit/3bb7b156c59804303a98acaafb79d47adbf3dc90))
+
 # [1.19.0](https://github.com/mini-app-polis/rotator-cog/compare/v1.18.6...v1.19.0) (2026-11-03)
 
 
