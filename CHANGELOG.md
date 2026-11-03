@@ -1,3 +1,10 @@
+## [1.18.6](https://github.com/mini-app-polis/rotator-cog/compare/v1.18.5...v1.18.6) (2026-11-03)
+
+
+### Bug Fixes
+
+* **deps:** bump miniapppolis-common-utils to 7.9.1 ([71f4100](https://github.com/mini-app-polis/rotator-cog/commit/71f4100e3bf5b4a6569481bc8634098c7ba7d2e7))
+
 ## [1.18.5](https://github.com/mini-app-polis/rotator-cog/compare/v1.18.4...v1.18.5) (2026-11-02)
 
 
