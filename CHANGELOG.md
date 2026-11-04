@@ -1,3 +1,18 @@
+# [1.21.0](https://github.com/mini-app-polis/rotator-cog/compare/v1.20.1...v1.21.0) (2026-11-04)
+
+
+### Bug Fixes
+
+* **deps:** bump miniapppolis-common-utils to 7.12.0 ([05653c2](https://github.com/mini-app-polis/rotator-cog/commit/05653c2b9b676664dd6cf00de58f538f0bdb6893))
+* **deps:** bump miniapppolis-common-utils to 7.13.0 ([71823a5](https://github.com/mini-app-polis/rotator-cog/commit/71823a52f41cfe2889d7a961ae5b9b683a2004e4))
+* **deps:** bump miniapppolis-common-utils to 7.14.0 ([e0c53c4](https://github.com/mini-app-polis/rotator-cog/commit/e0c53c4f1fbe8c2a7dcc084f1ea4a6345b8b2593))
+
+
+### Features
+
+* inventory the signals GitHub App's private key ([3e59a13](https://github.com/mini-app-polis/rotator-cog/commit/3e59a13c15ae42c464fe3912e046675e381402b5))
+* publish inventoried secret counts in facts.json ([c3eabb8](https://github.com/mini-app-polis/rotator-cog/commit/c3eabb8f37435b81c307e77f80da43deaf49bbc3))
+
 ## [1.20.1](https://github.com/mini-app-polis/rotator-cog/compare/v1.20.0...v1.20.1) (2026-11-03)
 
 
