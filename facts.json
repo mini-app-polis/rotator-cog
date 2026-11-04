@@ -18,6 +18,12 @@
       "description": "Credentials in the rotation inventory, by kind",
       "source": "count: secrets/inventory.yaml secrets by kind",
       "as_of": "2026-11-04"
+    },
+    "test_functions": {
+      "value": 225,
+      "description": "Test functions in the test suites (def test_*, each parametrized function once)",
+      "source": "matches: tests/**/test_*.py /(?m)^\\s*(?:async\\s+)?def test_\\w+/",
+      "as_of": "2026-11-04"
     }
   }
 }

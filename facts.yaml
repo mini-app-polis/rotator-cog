@@ -9,3 +9,8 @@ facts:
   secrets_by_kind:
     description: Credentials in the rotation inventory, by kind
     count: {file: secrets/inventory.yaml, path: secrets, group_by: kind}
+  test_functions:
+    description: Test functions in the test suites (def test_*, each parametrized function once)
+    matches:
+      file: tests/**/test_*.py
+      pattern: '(?m)^\s*(?:async\s+)?def test_\w+'
