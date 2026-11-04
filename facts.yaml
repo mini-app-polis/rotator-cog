@@ -1,0 +1,11 @@
+# The figures this repository owns, computed into facts.json by `facts
+# generate` (common-python-utils) and checked in CI by `facts check`.
+# Facts are generated, never edited by hand.
+repo: rotator-cog
+facts:
+  secrets_inventoried:
+    description: Credentials in the rotation inventory
+    count: {file: secrets/inventory.yaml, path: secrets}
+  secrets_by_kind:
+    description: Credentials in the rotation inventory, by kind
+    count: {file: secrets/inventory.yaml, path: secrets, group_by: kind}
