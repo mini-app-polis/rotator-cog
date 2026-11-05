@@ -1,3 +1,10 @@
+# [1.23.0](https://github.com/mini-app-polis/rotator-cog/compare/v1.22.1...v1.23.0) (2026-11-05)
+
+
+### Features
+
+* **rotate:** read a multi-line manual secret from the file the provider gives ([1d9c15b](https://github.com/mini-app-polis/rotator-cog/commit/1d9c15be2542cfc765c2e10970d8ba4faa38fc4c))
+
 ## [1.22.1](https://github.com/mini-app-polis/rotator-cog/compare/v1.22.0...v1.22.1) (2026-11-05)
 
 
