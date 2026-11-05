@@ -1,3 +1,19 @@
+# [1.22.0](https://github.com/mini-app-polis/rotator-cog/compare/v1.21.0...v1.22.0) (2026-11-05)
+
+
+### Bug Fixes
+
+* **deps:** bump miniapppolis-common-utils to 7.15.0 ([0008be1](https://github.com/mini-app-polis/rotator-cog/commit/0008be11d31bf66ae819492868b72177b2273241))
+* **deps:** bump miniapppolis-common-utils to 7.16.0 ([e648b51](https://github.com/mini-app-polis/rotator-cog/commit/e648b51729b8729ebe3d3b88dfbf33bc76fca641))
+* **deps:** bump miniapppolis-common-utils to 7.17.0 ([2299e60](https://github.com/mini-app-polis/rotator-cog/commit/2299e607263fef0bb9e421d02fb7c6284dd8ef51))
+* **deps:** bump miniapppolis-common-utils to 7.18.0 ([7c82aa5](https://github.com/mini-app-polis/rotator-cog/commit/7c82aa574a0bde349dc992a35b1d5ff031e5a61f))
+
+
+### Features
+
+* **facts:** publish the test-function count ([4dcc391](https://github.com/mini-app-polis/rotator-cog/commit/4dcc391758649f931f2e80c0a21f50d95ac9875c))
+* **inventory:** add TASK_REFINER_COG_API_KEY ([c7b0881](https://github.com/mini-app-polis/rotator-cog/commit/c7b0881da701c48eee17d181b1d0e1b726d21523))
+
 # [1.21.0](https://github.com/mini-app-polis/rotator-cog/compare/v1.20.1...v1.21.0) (2026-11-04)
 
 
