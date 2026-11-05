@@ -2,22 +2,22 @@
   "repo": "rotator-cog",
   "facts": {
     "secrets_inventoried": {
-      "value": 63,
+      "value": 64,
       "description": "Credentials in the rotation inventory",
       "source": "count: secrets/inventory.yaml secrets",
-      "as_of": "2026-11-04"
+      "as_of": "2026-11-05"
     },
     "secrets_by_kind": {
       "value": {
         "aws-access-key": 4,
         "generated": 3,
-        "machine-key": 19,
+        "machine-key": 20,
         "manual": 36,
         "provider-api": 1
       },
       "description": "Credentials in the rotation inventory, by kind",
       "source": "count: secrets/inventory.yaml secrets by kind",
-      "as_of": "2026-11-04"
+      "as_of": "2026-11-05"
     },
     "test_functions": {
       "value": 225,

@@ -755,7 +755,7 @@ def test_a_sweep_message_runs_the_sweep_of_its_config(
     "body",
     [
         "not json",
-        _body("task.groom"),
+        _body("task.refine"),
         _body(name="lower_case", config="prd", mode="routine"),
         _body(name="DEEJAY_COG_API_KEY", config="stg", mode="routine"),
         _body("rotation.sweep", config="prd", extra=True),
