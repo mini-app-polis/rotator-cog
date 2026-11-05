@@ -1,3 +1,10 @@
+## [1.23.1](https://github.com/mini-app-polis/rotator-cog/compare/v1.23.0...v1.23.1) (2026-11-05)
+
+
+### Bug Fixes
+
+* **sweep:** tell a rotation's task when the old value was retired ([85911f4](https://github.com/mini-app-polis/rotator-cog/commit/85911f4f1a6d3323505a7a9414df0d06bcd98988))
+
 # [1.23.0](https://github.com/mini-app-polis/rotator-cog/compare/v1.22.1...v1.23.0) (2026-11-05)
 
 
