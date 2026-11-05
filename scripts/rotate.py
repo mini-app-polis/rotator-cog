@@ -9,6 +9,7 @@
     uv run scripts/rotate.py check [--config prd]
     uv run scripts/rotate.py rotate NAME [NAME ...] --reason TEXT [--compromised] [--config prd] [--dry-run]
     uv run scripts/rotate.py rotate --tier 1 --kind machine-key --reason TEXT ...
+    uv run scripts/rotate.py rotate NAME --value-file PATH --reason TEXT [--config prd]
 
 secrets/inventory.yaml says what each secret is and how to rotate it. The
 API keeps the record: one event per rotation, written here through
@@ -18,9 +19,13 @@ environment, so the script runs under the owner's own Doppler login:
 
     doppler run --project owner-session --config prd -- uv run scripts/rotate.py ...
 
-Values never pass through stdout, an argument list or a file: a minted value
-goes to Doppler on stdin, a pasted value is read with getpass, and verify commands run under `doppler run`, so the value
-reaches them as an environment variable.
+Values never pass through stdout or an argument list: a minted value goes
+to Doppler on stdin, a pasted value is read with getpass, and verify
+commands run under `doppler run`, so the value reaches them as an
+environment variable. A value the provider hands over as a file and that
+spans lines (a GitHub App's private key, a PEM) cannot be pasted at a
+one-line prompt, so --value-file reads it from the file the provider gave,
+for one manual secret; delete the file once it is stored.
 
 Routine rotation keeps the old credential alive until the new one verifies.
 --compromised kills the old one as soon as the new one is stored, whether
@@ -352,6 +357,11 @@ def cmd_rotate(args, inv) -> int:
     if not names:
         sys.exit("nothing selected")
     chosen = {n: entry(inv, n, args.config) for n in names}
+    if args.value_file and (
+        len(chosen) != 1
+        or next(iter(chosen.values()))["kind"] not in ("manual", "provider-api")
+    ):
+        sys.exit("--value-file takes exactly one manual or provider-api secret")
     for n, e in chosen.items():
         if e["configs"] and args.config not in e["configs"]:
             sys.exit(
@@ -430,7 +440,11 @@ def cmd_rotate(args, inv) -> int:
                 f"   mint: {e.get('steps') or e.get('console', 'see the provider console')}"
             )
             if e["configs"]:
-                value = getpass.getpass(f"   paste new {n} (hidden, blank to skip): ")
+                value = (
+                    Path(args.value_file).expanduser().read_text()
+                    if args.value_file
+                    else getpass.getpass(f"   paste new {n} (hidden, blank to skip): ")
+                )
                 if not value.strip():
                     print("   skipped")
                     continue
@@ -718,6 +732,11 @@ def main() -> int:
         "and entries marked railway: true",
     )
     pr.add_argument("--dry-run", action="store_true")
+    pr.add_argument(
+        "--value-file",
+        help="read the new value of the one manual secret named from this file "
+        "(a multi-line value such as a PEM private key); delete it afterwards",
+    )
 
     pv = sub.add_parser(
         "verify",
