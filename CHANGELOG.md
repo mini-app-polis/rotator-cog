@@ -1,3 +1,11 @@
+## [1.23.2](https://github.com/mini-app-polis/rotator-cog/compare/v1.23.1...v1.23.2) (2026-11-05)
+
+
+### Bug Fixes
+
+* **deps:** bump miniapppolis-common-utils to 7.19.0 ([caacc49](https://github.com/mini-app-polis/rotator-cog/commit/caacc49dcf5fccd5123841680d54ce23b85daf7a))
+* **deps:** bump oauthlib to 4.0.1 and miniapppolis-common-utils to 7.20.0 ([0f9cd15](https://github.com/mini-app-polis/rotator-cog/commit/0f9cd156a0d02b4a2786ca206df4d269468c781c))
+
 ## [1.23.1](https://github.com/mini-app-polis/rotator-cog/compare/v1.23.0...v1.23.1) (2026-11-05)
 
 
