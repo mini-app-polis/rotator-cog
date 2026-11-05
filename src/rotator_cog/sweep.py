@@ -38,8 +38,11 @@ Infra's schedule sends one ``rotation.sweep`` per config each day. A sweep:
    Each manual secret it looks after that has a latest rotation is also
    sent to its task as an update, every day: under the key prefix
    ``secret-rotation.<config>.<name>.``, to Review, with the comment
-   ``Rotated <ISO timestamp>; verification <ok|failed|unchecked>`` and, for
-   a failed rotation, a second line naming the task that follows it. The
+   ``Rotated <ISO timestamp>; verification <ok|failed|unchecked>``, then
+   ``Old value retired <ISO timestamp>`` once the old value is recorded as
+   gone and, for a failed rotation, a line naming the task that follows it.
+   The task manager posts it as the task's handoff, and closes the task
+   itself when the rotation verified ok and the old value is retired. The
    task manager acts only on an open task created before the rotation, so
    a repeat changes nothing; an update that is not sent is reported and
    sent again by the next sweep.
@@ -411,11 +414,15 @@ def update_for(event: RotationEvent, config: str) -> TaskUpdateRequest:
 
     The key is a prefix naming the secret, not one cycle: the task manager
     finds the secret's open task under it. The comment holds the rotation's
-    time and verification and, for a failed rotation, the key of the task
-    that follows it; never a value.
+    time and verification, when the old value was retired (once it was),
+    and, for a failed rotation, the key of the task that follows it; never a
+    value. Together they answer the task's Done when: a rotation recorded,
+    and the old value revoked.
     """
     prefix = f"secret-rotation.{config}.{event.name}."
     lines = [f"Rotated {event.minted.isoformat()}; verification {event.verification}"]
+    if event.retired is not None:
+        lines.append(f"Old value retired {event.retired.isoformat()}")
     if event.verification == "failed":
         day = event.minted.date().isoformat()
         lines.append(f"The rotation failed; {prefix}failed-{day} follows it.")

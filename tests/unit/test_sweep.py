@@ -701,6 +701,15 @@ def test_an_update_names_the_secret_by_prefix_with_one_rotated_line(
     assert match and dt.datetime.fromisoformat(match.group(1)) == event.minted
 
 
+def test_an_update_says_when_the_old_value_was_retired() -> None:
+    event = _manual_event("BREVO_API_KEY", age_days=3, verification="ok")
+    event = event.model_copy(update={"retired": event.minted + dt.timedelta(minutes=5)})
+    update = sweep.update_for(event, "prd")
+    first, second = update.comment.splitlines()
+    assert ROTATED_LINE.fullmatch(first)
+    assert second == f"Old value retired {event.retired.isoformat()}"
+
+
 def test_a_failed_rotation_update_names_the_task_that_follows_it() -> None:
     event = _manual_event("BREVO_API_KEY", age_days=5, verification="failed")
     update = sweep.update_for(event, "dev")
