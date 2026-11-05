@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["miniapppolis-common-utils>=7.0.0,<8", "pyyaml>=6"]
+# dependencies = ["miniapppolis-common-utils>=8.0.0,<9", "pyyaml>=6"]
 # ///
 """Rotate the fleet's secrets and record that it happened.
 
