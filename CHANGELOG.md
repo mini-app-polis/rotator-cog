@@ -1,3 +1,10 @@
+# [1.24.0](https://github.com/mini-app-polis/rotator-cog/compare/v1.23.5...v1.24.0) (2026-11-06)
+
+
+### Features
+
+* **rotate:** redeploy the rotated secrets' services and wait for them ([fb456fc](https://github.com/mini-app-polis/rotator-cog/commit/fb456fcf08ba6854e7c18be68b4b47405d3a329c))
+
 ## [1.23.5](https://github.com/mini-app-polis/rotator-cog/compare/v1.23.4...v1.23.5) (2026-11-06)
 
 
