@@ -106,7 +106,10 @@ A daily sweep per config (14:00 UTC) does the rest:
   Until then it only reports what is due. A key mid-handover is not rotated again, and one whose
   last rotation failed is reported each day rather than retried. A key the
   services are not ready for is reported "not ready to rotate" and passed
-  over for the next most overdue, so it cannot hold up the rest.
+  over for the next most overdue, so it cannot hold up the rest. That
+  includes a machine key the API does not yet authenticate with the key
+  Doppler holds (a new or renamed machine): it is rotated by a later sweep,
+  once the API holds the key.
 - **Asks for a task per due manual secret**, once `ROTATOR_SWEEP_TASKS`
   is `true` in Doppler prd. Until then it only reports which are due. A
   manual secret is due when it has never been recorded as rotated, its
