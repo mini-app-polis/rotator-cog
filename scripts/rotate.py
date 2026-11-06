@@ -27,6 +27,13 @@ spans lines (a GitHub App's private key, a PEM) cannot be pasted at a
 one-line prompt, so --value-file reads it from the file the provider gave,
 for one manual secret; delete the file once it is stored.
 
+After the values are stored, the services the entries list are redeployed
+on Railway, once Railway shows the new values, as the worker does, with the
+rotator's project token for the config (read from Doppler rotator-cog/prd
+with the owner's login); the run waits for the deployments before it
+verifies. A redeploy that fails is printed, and the run waits for a person
+to redeploy by hand.
+
 Routine rotation keeps the old credential alive until the new one verifies.
 --compromised kills the old one as soon as the new one is stored, whether
 or not anything has picked it up yet: an outage is the price, and overlap is
@@ -51,6 +58,7 @@ import secrets as pysecrets
 import subprocess
 import sys
 import urllib.parse
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 import yaml
@@ -65,8 +73,21 @@ INVENTORY = ROOT / "secrets" / "inventory.yaml"
 # writes, and entries resolved per config.
 sys.path.insert(0, str(ROOT / "src"))
 from rotator_cog import entries, events  # noqa: E402
+from rotator_cog import railway as railway_mod  # noqa: E402
 
 AWS_PROFILE = os.environ.get("AWS_PROFILE", "miniapppolis")
+
+#: The Railway environment each config deploys to, and the rotator's project
+#: token for it, read from Doppler with the owner's own login.
+RAILWAY_ENVIRONMENTS = {"prd": "production", "dev": "development"}
+RAILWAY_TOKEN_PROJECT = ("rotator-cog", "prd")
+RAILWAY_TOKEN_NAMES = {
+    "prd": "ROTATOR_RAILWAY_TOKEN_PRD",
+    "dev": "ROTATOR_RAILWAY_TOKEN_DEV",
+}
+#: How long Railway may take to show the new values, then to deploy.
+SYNC_TIMEOUT_SECONDS = 120.0
+DEPLOY_TIMEOUT_SECONDS = 240.0
 USER_AGENT = "mini-app-polis-rotate/1"  # Cloudflare blocks default library UAs
 
 
@@ -208,6 +229,63 @@ def doppler_names(project: str, config: str) -> set[str]:
     data = json.loads(out)
     names = set(data) if isinstance(data, (dict, list)) else set()
     return names - {"DOPPLER_PROJECT", "DOPPLER_CONFIG", "DOPPLER_ENVIRONMENT"}
+
+
+def railway_token(config: str) -> str:
+    """The rotator's Railway project token for ``config``, from Doppler."""
+    project, doppler_config = RAILWAY_TOKEN_PROJECT
+    return run(
+        [
+            "doppler",
+            "secrets",
+            "get",
+            RAILWAY_TOKEN_NAMES[config],
+            "--project",
+            project,
+            "--config",
+            doppler_config,
+            "--plain",
+        ]
+    ).strip()
+
+
+def railway_redeploy(
+    config: str,
+    services: Mapping[str, Mapping[str, str]],
+    *,
+    token_reader: Callable[[str], str] = railway_token,
+    railway_factory: Callable[[str], railway_mod.Railway] = railway_mod.Railway,
+) -> None:
+    """Redeploy each service once Railway shows its new values, and wait.
+
+    ``services`` maps each service to the digests (railway.digest) of the
+    values just stored that it reads. Raises RailwayError, naming the
+    service and never a value, when a service is missing, a value does not
+    reach it in time, or a deployment fails or does not finish.
+    """
+    railway = railway_factory(token_reader(config))
+    environment = railway.environment_name()
+    if environment != RAILWAY_ENVIRONMENTS[config]:
+        raise railway_mod.RailwayError(
+            f"the {config} Railway token reaches {environment}, "
+            f"not {RAILWAY_ENVIRONMENTS[config]}"
+        )
+    ids = railway.service_ids()
+    unknown = sorted(set(services) - set(ids))
+    if unknown:
+        raise railway_mod.RailwayError(
+            f"not in Railway {environment}: {', '.join(unknown)}"
+        )
+    for service, expected in services.items():
+        if expected:
+            railway.wait_for_variables(
+                ids[service], dict(expected), timeout=SYNC_TIMEOUT_SECONDS
+            )
+    deployments = []
+    for service in services:
+        print(f"   redeploying {service}")
+        deployments.append(railway.redeploy(ids[service]))
+    railway.wait_for_deployments(deployments, timeout=DEPLOY_TIMEOUT_SECONDS)
 
 
 def aws(*args: str) -> dict:
@@ -386,13 +464,14 @@ def cmd_rotate(args, inv) -> int:
 
     # 1. mint and store -------------------------------------------------------
     for n, e in sorted(chosen.items(), key=lambda kv: (kv[1]["tier"], kv[0])):
-        state = {"old_aws_keys": [], "stored": False}
+        state = {"old_aws_keys": [], "stored": False, "digests": {}}
         kind = e["kind"]
         print(f"\n== {n}")
         if kind in ("machine-key", "generated"):
             # No dots in either part: a dotless credential routes as a machine key.
             value = inv.get("key_prefix", {}).get(cfg, "") + pysecrets.token_urlsafe(32)
             doppler_set(project, cfg, n, value)
+            state["digests"][n] = railway_mod.digest(value)
             del value
             state["stored"] = True
             if e.get("steps"):
@@ -413,6 +492,8 @@ def cmd_rotate(args, inv) -> int:
             created = aws("iam", "create-access-key", "--user-name", user)["AccessKey"]
             doppler_set(project, cfg, e["id_var"], created["AccessKeyId"])
             doppler_set(project, cfg, n, created["SecretAccessKey"])
+            state["digests"][e["id_var"]] = railway_mod.digest(created["AccessKeyId"])
+            state["digests"][n] = railway_mod.digest(created["SecretAccessKey"])
             del created["SecretAccessKey"]
             state.update(
                 stored=True,
@@ -449,6 +530,7 @@ def cmd_rotate(args, inv) -> int:
                     print("   skipped")
                     continue
                 doppler_set(project, cfg, n, value)
+                state["digests"][n] = railway_mod.digest(value)
                 del value
                 state["stored"] = True
             else:
@@ -468,13 +550,31 @@ def cmd_rotate(args, inv) -> int:
         return 1
 
     # 2. redeploy -------------------------------------------------------------
+    # Doppler's sync updates the shared variables; a running container keeps
+    # the old ones until it restarts, so each service is redeployed once
+    # Railway shows the new values.
     needed = sorted({s for n in done for s in chosen[n]["redeploy"]})
     if needed:
-        print(f"\nRedeploy on Railway ({cfg}): {', '.join(needed)}")
-        print(
-            "Doppler's sync updates the shared variables; a running container keeps the old ones until it restarts."
-        )
-        input("press Enter once they are redeployed ")
+        print(f"\nRedeploying on Railway ({cfg}): {', '.join(needed)}")
+        services = {
+            s: {
+                var: digest
+                for n in done
+                if s in chosen[n]["redeploy"]
+                for var, digest in done[n]["digests"].items()
+            }
+            for s in needed
+        }
+        try:
+            railway_redeploy(cfg, services)
+        except (railway_mod.RailwayError, SystemExit) as exc:
+            # The values are stored: the rotation still has to be verified
+            # and recorded, so a person redeploys and the run goes on.
+            print(f"redeploy failed: {exc}")
+            print(f"Redeploy by hand on Railway ({cfg}): {', '.join(needed)}")
+            input("press Enter once they are redeployed ")
+        else:
+            print("   redeployed")
 
     # 3. verify ---------------------------------------------------------------
     for n, state in done.items():
