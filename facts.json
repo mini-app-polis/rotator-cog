@@ -20,7 +20,7 @@
       "as_of": "2026-11-05"
     },
     "test_functions": {
-      "value": 229,
+      "value": 234,
       "description": "Test functions in the test suites (def test_*, each parametrized function once)",
       "source": "matches: tests/**/test_*.py /(?m)^\\s*(?:async\\s+)?def test_\\w+/",
       "as_of": "2026-11-06"
