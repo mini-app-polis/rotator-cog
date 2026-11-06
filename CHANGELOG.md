@@ -1,3 +1,10 @@
+## [1.23.5](https://github.com/mini-app-polis/rotator-cog/compare/v1.23.4...v1.23.5) (2026-11-06)
+
+
+### Bug Fixes
+
+* **sweep:** pass over a machine key the API cannot yet authenticate ([9c58de7](https://github.com/mini-app-polis/rotator-cog/commit/9c58de7451ba903d6f1c5c5b4c187d33c701b653))
+
 ## [1.23.4](https://github.com/mini-app-polis/rotator-cog/compare/v1.23.3...v1.23.4) (2026-11-06)
 
 
