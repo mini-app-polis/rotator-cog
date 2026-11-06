@@ -1,3 +1,11 @@
+## [1.23.3](https://github.com/mini-app-polis/rotator-cog/compare/v1.23.2...v1.23.3) (2026-11-06)
+
+
+### Bug Fixes
+
+* **deps:** bump miniapppolis-common-utils to 8.0.1 ([04f8559](https://github.com/mini-app-polis/rotator-cog/commit/04f855973d62bfe23ba579958b53dcf810f3b025))
+* **rotate:** run rotate.py on miniapppolis-common-utils 8 ([4ce18a9](https://github.com/mini-app-polis/rotator-cog/commit/4ce18a925d850ac1f2cc197840513eb7b2772bfb))
+
 ## [1.23.2](https://github.com/mini-app-polis/rotator-cog/compare/v1.23.1...v1.23.2) (2026-11-05)
 
 
