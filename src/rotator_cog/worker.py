@@ -56,7 +56,13 @@ there, and each holds every variable it will be waited on for. A service
 sees a shared variable only once it references it, which in development is
 set by hand, so a rotation whose NAME_PREVIOUS no service references would
 otherwise write to Doppler and then time out. A rotation that is not ready
-is reported, with the reference to add, and nothing is written.
+is reported, with the reference to add, and nothing is written. The sweep
+also checks, for a routine machine-key rotation, that the config's API
+already authenticates the machine with the key Doppler holds: whoami with
+that key must name the machine. A machine the API holds no key for yet (a
+new or renamed one) would fail the new key's check too, so that key is
+reported not ready, nothing is written, and a later sweep rotates it once
+the API holds the key.
 
 Then the new key is checked: ``GET /v1/identity/whoami`` with it, at the
 config's API, must name the machine. The rotation is recorded with the API
@@ -590,6 +596,44 @@ def _not_ready(
     for gap in gaps:
         report.issue("not ready to rotate; nothing was written", label, detail=gap)
     return bool(gaps)
+
+
+def _machine_not_ready(
+    job: RotationRequest,
+    entry: Mapping[str, Any],
+    store: doppler_mod.Doppler,
+    verify: Verifier,
+    *,
+    report: Any,
+    label: str,
+) -> bool:
+    """Report a machine key the API cannot yet authenticate. True when so.
+
+    Only a routine machine-key rotation is checked; a compromised one is
+    never held back. The key Doppler holds is presented to whoami: when it
+    does not name the machine, the new key's check would fail the same way.
+    A key not in Doppler is left to the rotation, which reports it.
+    """
+    if entry["kind"] != "machine-key" or job.mode == "compromised":
+        return False
+    held = store.get(job.name)
+    if held is None:
+        return False
+    try:
+        gap = verify(job.name, entry, job.config, held)
+    finally:
+        del held
+    if gap is None:
+        return False
+    report.issue(
+        "not ready to rotate; nothing was written",
+        label,
+        detail=(
+            f"the {job.config} API does not yet authenticate "
+            f"{machine_name(job.name)} with the key it holds: {gap}"
+        ),
+    )
+    return True
 
 
 class _IncidentReport:
@@ -1142,15 +1186,15 @@ def run_sweep(
             report.note(f"due, not rotated: {SWEEP_ROTATE_VAR} is off", overdue[0])
         if overdue and not ready and rotating:
             check = checker_factory()
+            verify = verifier_factory(inventory)
             for name in overdue:
                 job = sweep_mod.request_for(name, config)
                 entry = validate(job, inventory)
+                label = f"{name} in {config}"
                 if _not_ready(
-                    check,
-                    config,
-                    _needs(job, entry),
-                    report=report,
-                    label=f"{name} in {config}",
+                    check, config, _needs(job, entry), report=report, label=label
+                ) or _machine_not_ready(
+                    job, entry, store, verify, report=report, label=label
                 ):
                     continue
                 _rotate(
@@ -1160,7 +1204,7 @@ def run_sweep(
                     inventory=inventory,
                     report=report,
                     redeploy=redeploy,
-                    verify=verifier_factory(inventory),
+                    verify=verify,
                     record=record,
                     doppler_factory=doppler_factory,
                     now=now,

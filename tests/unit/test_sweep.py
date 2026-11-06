@@ -276,6 +276,7 @@ def _run(
     *,
     config: str = "prd",
     inventory: Any = None,
+    verify: Any = None,
 ) -> list[Any]:
     steps: list[Any] = []
 
@@ -293,7 +294,7 @@ def _run(
         ),
         redeploy_factory=lambda: redeploy,
         checker_factory=lambda: check or (lambda cfg, needs: []),
-        verifier_factory=lambda inventory: lambda *a: None,
+        verifier_factory=lambda inventory: verify or (lambda *a: None),
         recorder_factory=lambda: lambda event: steps.append(("record", event)),
         now=lambda: NOW,
     )
@@ -370,6 +371,84 @@ def test_a_key_the_services_are_not_ready_for_is_passed_over(posted: list) -> No
     ((args, kwargs),) = posted
     assert "not ready to rotate" in kwargs["text"]
     assert "WATCHER_COG_API_KEY in prd" in kwargs["text"]
+
+
+def _api_without(machine: str) -> Any:
+    """A verifier for an API that holds no key for ``machine`` yet."""
+
+    def verify(name: str, entry: Any, config: str, value: str) -> str | None:
+        return (
+            "whoami answered HTTP 401" if worker.machine_name(name) == machine else None
+        )
+
+    return verify
+
+
+def _two_due() -> tuple[FakeDoppler, FakeApi]:
+    fake = FakeDoppler({"DEEJAY_COG_API_KEY": "old-d", "WATCHER_COG_API_KEY": "old-w"})
+    api = FakeApi(
+        [
+            _event("DEEJAY_COG_API_KEY", age=dt.timedelta(days=95), retired=NOW),
+            _event("WATCHER_COG_API_KEY", age=dt.timedelta(days=120), retired=NOW),
+        ]
+    )
+    return fake, api
+
+
+def test_a_machine_key_the_api_cannot_yet_authenticate_is_passed_over(
+    posted: list,
+) -> None:
+    """Nothing is written for it, nothing is recorded, and the next most
+    overdue key is rotated."""
+    fake, api = _two_due()
+    steps = _run(fake, api, posted, verify=_api_without("watcher-cog"))
+    assert fake.secrets["WATCHER_COG_API_KEY"] == "old-w"
+    assert "WATCHER_COG_API_KEY_PREVIOUS" not in fake.secrets
+    assert not [w for w in fake.writes() if "WATCHER" in str(w)]
+    assert not [s for s in steps if s[0] == "redeploy" and "WATCHER" in str(s[2])]
+    (record,) = [s[1] for s in steps if s[0] == "record"]
+    assert record.name == "DEEJAY_COG_API_KEY" and record.verification == "ok"
+    ((args, kwargs),) = posted
+    text = kwargs["text"]
+    assert "not ready to rotate; nothing was written" in text
+    assert "WATCHER_COG_API_KEY in prd" in text
+    assert "old-w" not in text and "old-d" not in text
+
+
+def test_the_key_rotates_once_the_api_authenticates_its_machine(posted: list) -> None:
+    fake, api = _two_due()
+    _run(fake, api, posted, verify=_api_without("watcher-cog"))
+    fake, api = _two_due()
+    steps = _run(fake, api, posted)
+    assert fake.secrets["WATCHER_COG_API_KEY"] != "old-w"
+    (record,) = [s[1] for s in steps if s[0] == "record"]
+    assert record.name == "WATCHER_COG_API_KEY" and record.verification == "ok"
+
+
+def test_a_compromised_rotation_is_never_held_back_by_the_machine_check() -> None:
+    asked: list[str] = []
+
+    def verify(*a: Any) -> str:
+        asked.append(a[0])
+        return "whoami answered HTTP 401"
+
+    fake = FakeDoppler({"WATCHER_COG_API_KEY": "old-w"})
+    store = doppler.Doppler(
+        "p", "prd", TOKEN, transport=httpx.MockTransport(fake.handle)
+    )
+    job = sweep.request_for("WATCHER_COG_API_KEY", "prd").model_copy(
+        update={"mode": "compromised"}
+    )
+    entry = INVENTORY["secrets"]["WATCHER_COG_API_KEY"]
+
+    class Report:
+        def issue(self, *a: Any, **kw: Any) -> None:
+            raise AssertionError("a compromised rotation is not reported not ready")
+
+    assert not worker._machine_not_ready(
+        job, entry, store, verify, report=Report(), label="WATCHER_COG_API_KEY in prd"
+    )
+    assert asked == []
 
 
 def test_a_run_that_retires_rotates_nothing_that_day(posted: list) -> None:
