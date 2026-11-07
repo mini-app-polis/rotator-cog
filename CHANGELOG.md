@@ -1,3 +1,13 @@
+## [1.24.2](https://github.com/mini-app-polis/rotator-cog/compare/v1.24.1...v1.24.2) (2026-11-07)
+
+
+### Bug Fixes
+
+* **deps:** bump miniapppolis-common-utils to 8.10.0 ([b4ac1e4](https://github.com/mini-app-polis/rotator-cog/commit/b4ac1e4ad0b702999116629a2b0a31a20c00b3c5))
+* **deps:** bump miniapppolis-common-utils to 8.8.0 ([fc51a95](https://github.com/mini-app-polis/rotator-cog/commit/fc51a959172fcab73554a742fd4ef1994eca1806))
+* **deps:** bump miniapppolis-common-utils to 8.9.0 ([1a7a67a](https://github.com/mini-app-polis/rotator-cog/commit/1a7a67a867dda1e9b6585194e0a763c20dab848f))
+* **rotate:** read the owner key before changing anything, so a rotation is never left unrecorded ([831fee8](https://github.com/mini-app-polis/rotator-cog/commit/831fee8b9ebc2dda342716005d99cf5d885deb8c))
+
 ## [1.24.1](https://github.com/mini-app-polis/rotator-cog/compare/v1.24.0...v1.24.1) (2026-11-07)
 
 
