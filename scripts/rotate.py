@@ -881,11 +881,16 @@ def refusal(exc: KaianoApiError | ValidationError) -> str:
 
 
 def dispatch(args, inv) -> int:
+    if args.cmd == "check":
+        return cmd_check(args, inv)
+    if not getattr(args, "dry_run", False):
+        # Every other command reads or writes the record. Take the owner key
+        # before anything changes, so a run without it stops here, not after
+        # a value is stored and left unrecorded.
+        record_api_for(args)
     if args.cmd == "list":
         cmd_list(args, inv)
         return 0
-    if args.cmd == "check":
-        return cmd_check(args, inv)
     if args.cmd == "pg-roles":
         return cmd_pg_roles(args, inv)
     if args.cmd == "verify":
