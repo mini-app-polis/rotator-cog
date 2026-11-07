@@ -1,3 +1,16 @@
+## [1.24.1](https://github.com/mini-app-polis/rotator-cog/compare/v1.24.0...v1.24.1) (2026-11-07)
+
+
+### Bug Fixes
+
+* **deps:** bump miniapppolis-common-utils to 8.2.0 ([dd2a759](https://github.com/mini-app-polis/rotator-cog/commit/dd2a759a7bc2da0ef27fed6dce21b867393fff6f))
+* **deps:** bump miniapppolis-common-utils to 8.3.0 ([57d7e1c](https://github.com/mini-app-polis/rotator-cog/commit/57d7e1cafce2af66ad72c381b059a1d033a3b975))
+* **deps:** bump miniapppolis-common-utils to 8.4.0 ([a12c216](https://github.com/mini-app-polis/rotator-cog/commit/a12c216b237b07112057363660068dc76dec9cf0))
+* **deps:** bump miniapppolis-common-utils to 8.5.0 ([4883fc5](https://github.com/mini-app-polis/rotator-cog/commit/4883fc58a134baa4c0ee401afac2f62a469fc929))
+* **deps:** bump miniapppolis-common-utils to 8.6.0 ([0e53058](https://github.com/mini-app-polis/rotator-cog/commit/0e53058401846f823464282324e705104f0085dd))
+* **deps:** bump miniapppolis-common-utils to 8.6.1 ([f1b574d](https://github.com/mini-app-polis/rotator-cog/commit/f1b574d55574ef0402038327eb4da954d5fd3f43))
+* **deps:** bump miniapppolis-common-utils to 8.7.0 ([822155d](https://github.com/mini-app-polis/rotator-cog/commit/822155dedf4bc92efcddb1620ef9b95aa8455d9b))
+
 # [1.24.0](https://github.com/mini-app-polis/rotator-cog/compare/v1.23.5...v1.24.0) (2026-11-06)
 
 
