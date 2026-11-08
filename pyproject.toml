@@ -3,7 +3,7 @@ name = "rotator-cog"
 dynamic = ["version"]
 description = "Rotates the fleet's secrets and records each rotation. Holds the inventory of every credential the fleet holds, the record of rotations and the rotation script."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 dependencies = [
     "httpx>=0.27,<1.0",
     "miniapppolis-common-utils>=8.0.0,<9",
@@ -59,7 +59,7 @@ testpaths = ["tests/unit", "tests/integration"]
 addopts = "--cov=rotator_cog --cov-report=term-missing"
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.14"
 strict = false
 ignore_missing_imports = true
 
