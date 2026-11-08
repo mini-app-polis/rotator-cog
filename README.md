@@ -9,6 +9,13 @@ rotates them; the record of every rotation is kept by the API
 (`/v1/secrets/rotation-events`). None of it ever holds a value: values live
 in Doppler.
 
+**Inputs and outputs.** The worker consumes `rotation.job`, `rotation.sweep`
+and `rotation.incident` messages from its SQS queue, and reads the inventory
+packaged with it. It writes to Doppler (the new values), redeploys the
+affected Railway services, writes rotation records to
+`/v1/secrets/rotation-events`, and files board tasks for secrets a person
+rotates.
+
 - [`secrets/`](secrets/README.md): the inventory and the compromise
   runbook.
 - [`docs/provider-assessment.md`](docs/provider-assessment.md): which
