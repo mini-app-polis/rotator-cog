@@ -64,7 +64,7 @@ what to do when a secret is compromised.
 
 ## Running locally
 
-Requires Python 3.11+, [uv](https://github.com/astral-sh/uv) and the
+Requires Python 3.14+, [uv](https://github.com/astral-sh/uv) and the
 [Doppler CLI](https://docs.doppler.com/docs/install-cli). Secrets come from
 this repo's own Doppler `dev` config — nothing reads a `.env` file;
 [`.env.example`](.env.example) lists the names.
