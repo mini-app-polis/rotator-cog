@@ -179,15 +179,46 @@ class Context:
         return 900_000
 
 
-def sqs_event(message_type: str, payload: dict[str, Any]) -> dict[str, Any]:
-    """One SQS record carrying one message, as the queue delivers it."""
-    body = json.dumps({"type": message_type, "version": 1, "payload": payload})
+def message_body(message_type: str, payload: dict[str, Any]) -> str:
+    """A message as the producers write it."""
+    return json.dumps({"type": message_type, "version": 1, "payload": payload})
+
+
+def sqs_batch(*bodies: str) -> dict[str, Any]:
+    """One SQS event carrying each body as a record, msg-1 onward."""
     return {
         "Records": [
             {
-                "messageId": "msg-1",
+                "messageId": f"msg-{i}",
                 "body": body,
                 "attributes": {"ApproximateReceiveCount": "1"},
             }
+            for i, body in enumerate(bodies, start=1)
         ]
     }
+
+
+def sqs_event(message_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """One SQS record carrying one message, as the queue delivers it."""
+    return sqs_batch(message_body(message_type, payload))
+
+
+class FifoQueue:
+    """The rotator's queue as infra declares it: FIFO, content-based
+    deduplication, one receive (max_receive_count = 1). A body sent again
+    while the first is held is the same message, as SQS's deduplication
+    window makes it; a delivered message is never delivered again."""
+
+    def __init__(self) -> None:
+        self.bodies: list[str] = []
+
+    def send_message(self, **kwargs: Any) -> dict[str, Any]:
+        assert "MessageDeduplicationId" not in kwargs, "content-based dedup only"
+        if kwargs["MessageBody"] not in self.bodies:
+            self.bodies.append(kwargs["MessageBody"])
+        return {"MessageId": f"m-{self.bodies.index(kwargs['MessageBody'])}"}
+
+    def receive(self) -> dict[str, Any]:
+        """Deliver everything held, once."""
+        event, self.bodies = sqs_batch(*self.bodies), []
+        return event
