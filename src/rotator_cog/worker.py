@@ -1273,12 +1273,17 @@ def run_sweep(
         # 5. Changes Doppler reported that no rotation explains.
         since, until = sweep_mod.change_window(at)
         try:
-            changes = api.changes(config, since=since, until=until)
+            # Read back far enough to see a brand new secret's addition.
+            read = api.changes(
+                config, since=since - sweep_mod.NEW_SECRET_SETTLES, until=until
+            )
+            changes = [c for c in read if c.changed_at >= since]
+            history = [c for c in read if c.changed_at < since]
             events = api.events(config)
         except Exception as exc:  # noqa: BLE001 — the rest of the sweep still counts
             report.issue("secret changes not read", config, detail=str(exc)[:500])
         else:
-            odd = sweep_mod.unexplained(changes, events, inventory)
+            odd = sweep_mod.unexplained(changes, events, inventory, history=history)
             report.count(
                 "changes",
                 len(changes),

@@ -1122,6 +1122,30 @@ def test_a_rotation_of_another_secret_explains_nothing() -> None:
     assert sweep.unexplained([change], events, CHANGE_INVENTORY) == [change]
 
 
+def test_a_brand_new_secret_being_put_in_place_is_not_judged() -> None:
+    """Its name was added days ago, empty or with a placeholder; setting its
+    first real value is not a change to a value."""
+    change = _change("AWS_SECRET_ACCESS_KEY")
+    added = _change(
+        "AWS_SECRET_ACCESS_KEY",
+        change="added",
+        at=change.changed_at - dt.timedelta(days=2),
+    )
+    assert sweep.unexplained([change], [], CHANGE_INVENTORY, history=[added]) == []
+
+
+def test_a_secret_added_long_ago_is_judged_again() -> None:
+    change = _change("AWS_SECRET_ACCESS_KEY")
+    added = _change(
+        "AWS_SECRET_ACCESS_KEY",
+        change="added",
+        at=change.changed_at - dt.timedelta(days=8),
+    )
+    assert sweep.unexplained([change], [], CHANGE_INVENTORY, history=[added]) == [
+        change
+    ]
+
+
 @pytest.mark.parametrize(
     "name",
     [
@@ -1183,12 +1207,12 @@ def test_an_added_previous_slot_is_explained_by_a_rotation_over_its_handover() -
     assert sweep.unexplained([slot], events, CHANGE_INVENTORY) == []
 
 
-def test_an_update_to_an_added_secret_is_still_judged() -> None:
+def test_an_update_just_after_an_added_secret_is_it_being_put_in_place() -> None:
     added = _change("DEEJAY_COG_API_KEY", change="added")
     updated = _change(
         "DEEJAY_COG_API_KEY", at=added.changed_at + dt.timedelta(minutes=10)
     )
-    assert sweep.unexplained([added, updated], [], CHANGE_INVENTORY) == [updated]
+    assert sweep.unexplained([added, updated], [], CHANGE_INVENTORY) == []
 
 
 def test_a_name_the_inventory_does_not_list_is_left_to_drift() -> None:
@@ -1237,7 +1261,12 @@ def test_a_sweep_asks_for_a_task_per_unexplained_change(
         sweep.change_task_for(stray, "prd").external_id
     ]
     ((config, since, until),) = api.change_reads
-    assert (config, since, until) == ("prd", *sweep.change_window(NOW))
+    window_since, window_until = sweep.change_window(NOW)
+    assert (config, since, until) == (
+        "prd",
+        window_since - sweep.NEW_SECRET_SETTLES,
+        window_until,
+    )
     ((args, kwargs),) = posted
     assert "changed outside a rotation" in kwargs["text"]
     assert "DEEJAY_COG_API_KEY in prd" in kwargs["text"]
