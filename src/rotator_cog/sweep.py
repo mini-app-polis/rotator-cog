@@ -118,6 +118,9 @@ EXPLAINED_AFTER = timedelta(minutes=5)
 #: with it over the whole handover: a previous key is retired within seven
 #: days, then deleted.
 HANDOVER_EXPLAINS = timedelta(days=8)
+#: A secret's value set within this long after its name was added is the
+#: secret being put in place — its first real value — not a change to one.
+NEW_SECRET_SETTLES = timedelta(days=7)
 
 #: Names Doppler adds to every config.
 DOPPLER_OWN = frozenset({"DOPPLER_PROJECT", "DOPPLER_CONFIG", "DOPPLER_ENVIRONMENT"})
@@ -556,19 +559,24 @@ def unexplained(
     changes: Iterable[SecretChange],
     events: Iterable[RotationEvent],
     inventory: Mapping[str, Any],
+    *,
+    history: Iterable[SecretChange] = (),
 ) -> list[SecretChange]:
     """The changes to inventory names that no recorded rotation explains.
 
     ``changes`` are one config's. An added name held no value before, so
     only an added ``_PREVIOUS`` slot (a second accepted key) is judged, and
     its secret's own addition near it explains it as well as a rotation.
+    A brand new secret is not judged either: a change to it within
+    ``NEW_SECRET_SETTLES`` of its name being added is it being put in place.
+    ``history`` is the config's earlier changes, read for those additions.
     """
     changes = list(changes)
     minted: dict[str, list[datetime]] = {}
     for event in events:
         minted.setdefault(event.name, []).append(event.minted)
     added: dict[str, list[datetime]] = {}
-    for change in changes:
+    for change in [*history, *changes]:
         if change.change == "added":
             added.setdefault(change.name, []).append(change.changed_at)
     out: list[SecretChange] = []
@@ -586,6 +594,11 @@ def unexplained(
                 for at in added.get(secret, [])
             ):
                 continue
+        if itself and any(
+            timedelta(0) <= change.changed_at - at <= NEW_SECRET_SETTLES
+            for at in added.get(secret, [])
+        ):
+            continue
         before = EXPLAINED_BEFORE if itself else HANDOVER_EXPLAINS
         earliest = change.changed_at - before
         latest = change.changed_at + EXPLAINED_AFTER
