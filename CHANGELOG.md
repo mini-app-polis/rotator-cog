@@ -1,3 +1,11 @@
+## [1.25.5](https://github.com/mini-app-polis/rotator-cog/compare/v1.25.4...v1.25.5) (2026-11-10)
+
+
+### Bug Fixes
+
+* **sweep:** a brand new secret being put in place is not a change outside a rotation ([773e03f](https://github.com/mini-app-polis/rotator-cog/commit/773e03f2acb2e388d839e05eb93027709ec118cf))
+* **sweep:** a brand new secret being put in place is not a change outside a rotation ([9592f5d](https://github.com/mini-app-polis/rotator-cog/commit/9592f5d274161a3fef0bed33bba9211c772ba9fb))
+
 ## [1.25.4](https://github.com/mini-app-polis/rotator-cog/compare/v1.25.3...v1.25.4) (2026-11-10)
 
 
