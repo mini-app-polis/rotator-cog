@@ -435,19 +435,36 @@ def update_for(event: RotationEvent, config: str) -> TaskUpdateRequest:
     )
 
 
+#: How far back a sweep looks for rotations to send to their tasks, by when
+#: the API last recorded them. Sweeps run daily; three days means a rotation
+#: still reaches its task when one or two sweeps in a row do not run. One
+#: sent on more than one sweep is harmless: the task manager posts a comment
+#: only once and never moves a task twice.
+UPDATE_LOOKBACK = timedelta(days=3)
+
+
 def rotation_updates(
     inventory: Mapping[str, Any],
     latest: Mapping[str, RotationEvent],
     config: str,
+    *,
+    now: datetime,
 ) -> list[tuple[str, TaskUpdateRequest]]:
     """(Name, update) for each manual secret ``config``'s sweep looks after
-    that has a latest rotation, by name."""
+    whose latest rotation the API recorded within :data:`UPDATE_LOOKBACK` of
+    ``now``, by name.
+
+    ``recorded_at`` moves on whenever the event is written again, so the
+    retirement of a rotation's old value, a day after it, is sent too. An
+    older rotation has reached its task already and is not sent again.
+    """
+    since = now - UPDATE_LOOKBACK
     out: list[tuple[str, TaskUpdateRequest]] = []
     for name, entry in sorted(inventory["secrets"].items()):
         if entry.get("kind") != "manual" or not held_for_sweep(entry, config):
             continue
         last = latest.get(name)
-        if last is not None:
+        if last is not None and last.recorded_at >= since:
             out.append((name, update_for(last, config)))
     return out
 

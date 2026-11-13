@@ -806,12 +806,12 @@ def test_a_failed_rotation_update_names_the_task_that_follows_it() -> None:
     assert f".{due.cycle}" in second
 
 
-def test_updates_are_for_the_configs_manual_secrets_with_a_rotation() -> None:
+def test_updates_are_for_the_configs_manual_secrets_with_a_new_rotation() -> None:
     latest = {
-        n: _manual_event(n, age_days=10)
+        n: _manual_event(n, age_days=2)
         for n in ("BREVO_API_KEY", "DEEJAYTOOLS_CLERK_SECRET_KEY", "TICK_SECRET")
     }
-    prd = sweep.rotation_updates(MANUAL, latest, "prd")
+    prd = sweep.rotation_updates(MANUAL, latest, "prd", now=NOW)
     assert [(n, u.external_id) for n, u in prd] == [
         ("BREVO_API_KEY", "secret-rotation.prd.BREVO_API_KEY."),
         (
@@ -819,8 +819,36 @@ def test_updates_are_for_the_configs_manual_secrets_with_a_rotation() -> None:
             "secret-rotation.prd.DEEJAYTOOLS_CLERK_SECRET_KEY.",
         ),
     ]
-    dev = sweep.rotation_updates(MANUAL, latest, "dev")
+    dev = sweep.rotation_updates(MANUAL, latest, "dev", now=NOW)
     assert [n for n, _ in dev] == ["DEEJAYTOOLS_CLERK_SECRET_KEY"]
+
+
+def test_a_rotation_recorded_before_the_lookback_is_not_sent_again() -> None:
+    old = _manual_event("BREVO_API_KEY", age_days=10)
+    assert sweep.rotation_updates(MANUAL, {"BREVO_API_KEY": old}, "prd", now=NOW) == []
+    edge = old.model_copy(update={"recorded_at": NOW - sweep.UPDATE_LOOKBACK})
+    assert [
+        n
+        for n, _ in sweep.rotation_updates(
+            MANUAL, {"BREVO_API_KEY": edge}, "prd", now=NOW
+        )
+    ] == ["BREVO_API_KEY"]
+
+
+def test_an_old_rotation_written_again_is_sent_with_its_retirement() -> None:
+    # Minted long ago, but its old value was retired (and the event written
+    # again) yesterday: the task hears of the retirement.
+    event = _manual_event("BREVO_API_KEY", age_days=10).model_copy(
+        update={
+            "retired": NOW - dt.timedelta(days=1),
+            "recorded_at": NOW - dt.timedelta(days=1),
+        }
+    )
+    ((name, update),) = sweep.rotation_updates(
+        MANUAL, {"BREVO_API_KEY": event}, "prd", now=NOW
+    )
+    assert name == "BREVO_API_KEY"
+    assert "Old value retired" in update.comment
 
 
 def _rotated_manual_api(**manual_ages: int) -> FakeApi:
@@ -839,22 +867,35 @@ ROTATED_INVENTORY = {
 }
 
 
-def test_a_sweep_sends_each_manual_secrets_latest_rotation_every_day(
+def test_a_sweep_sends_only_new_rotations_and_reports_them_as_sent(
     posted: list, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv(worker.SWEEP_TASKS_VAR, "true")
     fake = FakeDoppler({"DEEJAY_COG_API_KEY": "d", "WATCHER_COG_API_KEY": "w"})
-    first = _rotated_manual_api(OPENAI_API_KEY=30, BREVO_API_KEY=2)
-    second = _rotated_manual_api(OPENAI_API_KEY=30, BREVO_API_KEY=2)
-    _run(fake, first, posted, inventory=ROTATED_INVENTORY)
-    _run(fake, second, posted, inventory=ROTATED_INVENTORY)
-    assert [u.external_id for u in first.updates] == [
-        "secret-rotation.prd.BREVO_API_KEY.",
-        "secret-rotation.prd.OPENAI_API_KEY.",
+    api = _rotated_manual_api(OPENAI_API_KEY=30, BREVO_API_KEY=2)
+    _run(fake, api, posted, inventory=ROTATED_INVENTORY)
+    # OPENAI_API_KEY was rotated a month ago: its task has heard already.
+    assert [u.external_id for u in api.updates] == [
+        "secret-rotation.prd.BREVO_API_KEY."
     ]
-    assert second.updates == first.updates
-    assert first.asked == []
-    assert "rotation update sent" in posted[0][1]["text"]
+    text = posted[0][1]["text"]
+    assert "rotation sent to its task" in text
+    assert "BREVO_API_KEY in prd" in text
+    skipped = text.split("Skipped", 1)[1] if "Skipped" in text else ""
+    assert "rotation" not in skipped
+
+
+def test_a_sweep_with_no_new_rotations_sends_and_reports_no_updates(
+    posted: list, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(worker.SWEEP_TASKS_VAR, "true")
+    fake = FakeDoppler({"DEEJAY_COG_API_KEY": "d", "WATCHER_COG_API_KEY": "w"})
+    api = _rotated_manual_api(OPENAI_API_KEY=30, BREVO_API_KEY=20)
+    _run(fake, api, posted, inventory=ROTATED_INVENTORY)
+    assert api.updates == []
+    text = posted[0][1]["text"] if posted else ""
+    assert "rotation sent to its task" not in text
+    assert "rotation update" not in text
 
 
 def test_with_tasks_off_no_update_is_sent(
@@ -875,7 +916,7 @@ def test_an_update_not_sent_is_reported_and_the_rest_go_on(
     fake = FakeDoppler(
         {"DEEJAY_COG_API_KEY": "d", "WATCHER_COG_API_KEY": "w", "NEW_TOKEN": "x"}
     )
-    api = _rotated_manual_api(OPENAI_API_KEY=30, BREVO_API_KEY=2)
+    api = _rotated_manual_api(OPENAI_API_KEY=1, BREVO_API_KEY=2)
     sent: list[Any] = []
 
     def refuse_brevo(request: Any) -> None:
