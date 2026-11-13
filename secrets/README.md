@@ -125,15 +125,21 @@ A daily sweep per config (14:00 UTC) does the rest:
   not yet asked, and `manual_due` still counts them all. Asking again for a
   task that already exists creates nothing, so at most that many are open
   at once, and the next are asked for as those are rotated.
-- **Sends each manual secret's latest rotation to its task**, with
-  `ROTATOR_SWEEP_TASKS` on, every day: an update under the key prefix
+- **Sends each manual secret's new rotation to its task**, with
+  `ROTATOR_SWEEP_TASKS` on: a rotation the API recorded (or wrote again,
+  as when its old value is retired) in the last three days. It goes as an
+  update under the key prefix
   `secret-rotation.<config>.<name>.` whose comment's first line is
   `Rotated <ISO timestamp>; verification <ok|failed|unchecked>` (for a
   failed rotation, a second line names the `failed-<date>` task that follows
   it), to Review. The task manager moves the secret's open task to Review
-  only when the rotation is newer than the task, so the daily repeat changes
-  nothing. An update that is not sent is in the run report and sent again
-  the next day.
+  only when the rotation is newer than the task, and posts a comment only
+  once, so a rotation sent on two or three sweeps in a row changes nothing
+  after the first; one or two sweeps that do not run lose nothing. An older
+  rotation has reached its task and is not sent again. Updates sent are in
+  the run report under "rotation sent to its task"; one that is not sent is
+  reported as an issue and sent again the next day, while it is still
+  inside the three days.
 - **Reports drift**, as `rotate.py check` does, in the run report.
 - **Flags changes no rotation explains.** Doppler's secrets.update webhook
   tells the API which names changed (never values). Once a change is a day

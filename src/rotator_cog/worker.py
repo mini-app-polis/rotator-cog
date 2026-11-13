@@ -1249,10 +1249,13 @@ def run_sweep(
                 continue
             report.note("rotation task asked for", label)
 
-        # Each manual secret's latest rotation, to its task: the task manager
-        # moves the open task to Review when the rotation is newer than it.
+        # Each manual secret's rotation recorded in the last few days, to its
+        # task: the task manager moves the open task to Review when the
+        # rotation is newer than it. Older ones have been sent already.
         if asking:
-            for name, update in sweep_mod.rotation_updates(inventory, latest, config):
+            for name, update in sweep_mod.rotation_updates(
+                inventory, latest, config, now=at
+            ):
                 label = f"{name} in {config}"
                 try:
                     api.update_task(update)
@@ -1261,7 +1264,7 @@ def run_sweep(
                         "rotation update not sent", label, detail=str(exc)[:500]
                     )
                     continue
-                report.note("rotation update sent", label)
+                report.updated("rotation sent to its task", label)
 
         # 4. Drift between Doppler and the inventory.
         unknown, missing = sweep_mod.drift(store.names(), inventory, config)
