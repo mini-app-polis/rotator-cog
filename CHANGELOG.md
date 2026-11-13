@@ -1,3 +1,13 @@
+## [1.26.1](https://github.com/mini-app-polis/rotator-cog/compare/v1.26.0...v1.26.1) (2026-11-13)
+
+
+### Bug Fixes
+
+* **deps:** bump miniapppolis-common-utils to 9.10.2 ([68689f2](https://github.com/mini-app-polis/rotator-cog/commit/68689f2ad24518bed193758a100965689c6a9330))
+* **deps:** bump miniapppolis-common-utils to 9.10.3 ([edea08d](https://github.com/mini-app-polis/rotator-cog/commit/edea08d5d9b5463ce41bdae41ff478a791a6e43d))
+* **deps:** bump miniapppolis-common-utils to 9.10.4 ([7e27134](https://github.com/mini-app-polis/rotator-cog/commit/7e27134f1ff42b2f984507e258c483b6a3a89cea))
+* **sweep:** send a manual secret's rotation to its task only when it is new, and report it as sent ([2310147](https://github.com/mini-app-polis/rotator-cog/commit/23101472c5a5be2b263471d693983044fd89897a))
+
 # [1.26.0](https://github.com/mini-app-polis/rotator-cog/compare/v1.25.8...v1.26.0) (2026-11-13)
 
 
