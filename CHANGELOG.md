@@ -1,3 +1,17 @@
+# [1.26.0](https://github.com/mini-app-polis/rotator-cog/compare/v1.25.8...v1.26.0) (2026-11-13)
+
+
+### Bug Fixes
+
+* **deps:** bump miniapppolis-common-utils to 9.10.0 ([05d4cac](https://github.com/mini-app-polis/rotator-cog/commit/05d4cacedd625dab8239b35ba58a318c4acc3559))
+* **deps:** bump miniapppolis-common-utils to 9.10.1 ([8c5cb96](https://github.com/mini-app-polis/rotator-cog/commit/8c5cb96a8201fa418ec971855168b45a2c0ec5a8))
+* **facts:** count the two Sentry secrets in the inventory facts ([b9448b6](https://github.com/mini-app-polis/rotator-cog/commit/b9448b62c918d0fb1a1162547503ceceeeb4c14c))
+
+
+### Features
+
+* **inventory:** add the Sentry webhook secret and API token the API's Sentry route uses ([89983ce](https://github.com/mini-app-polis/rotator-cog/commit/89983cef27320cced34ee473baec222b29e2ba7c))
+
 ## [1.25.8](https://github.com/mini-app-polis/rotator-cog/compare/v1.25.7...v1.25.8) (2026-11-12)
 
 
