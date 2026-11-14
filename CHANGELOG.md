@@ -1,3 +1,10 @@
+## [1.26.2](https://github.com/mini-app-polis/rotator-cog/compare/v1.26.1...v1.26.2) (2026-11-14)
+
+
+### Bug Fixes
+
+* **sweep:** report rotation updates as sent, not as reaching a task ([d788186](https://github.com/mini-app-polis/rotator-cog/commit/d788186b381b709c78c820f3aeb921e1e074b2db))
+
 ## [1.26.1](https://github.com/mini-app-polis/rotator-cog/compare/v1.26.0...v1.26.1) (2026-11-13)
 
 
