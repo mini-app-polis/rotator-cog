@@ -137,7 +137,10 @@ A daily sweep per config (14:00 UTC) does the rest:
   once, so a rotation sent on two or three sweeps in a row changes nothing
   after the first; one or two sweeps that do not run lose nothing. An older
   rotation has reached its task and is not sent again. Updates sent are in
-  the run report under "rotation sent to its task"; one that is not sent is
+  the run report under "rotation update sent": sent to the task manager,
+  which applies it only if the secret has an open rotation task (a secret
+  first put in place with rotate.py has none, so nothing changes on the
+  board); task-manager-cog's own run says what it did. One that is not sent is
   reported as an issue and sent again the next day, while it is still
   inside the three days.
 - **Reports drift**, as `rotate.py check` does, in the run report.

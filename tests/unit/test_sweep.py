@@ -879,7 +879,7 @@ def test_a_sweep_sends_only_new_rotations_and_reports_them_as_sent(
         "secret-rotation.prd.BREVO_API_KEY."
     ]
     text = posted[0][1]["text"]
-    assert "rotation sent to its task" in text
+    assert "rotation update sent" in text
     assert "BREVO_API_KEY in prd" in text
     skipped = text.split("Skipped", 1)[1] if "Skipped" in text else ""
     assert "rotation" not in skipped
@@ -894,7 +894,7 @@ def test_a_sweep_with_no_new_rotations_sends_and_reports_no_updates(
     _run(fake, api, posted, inventory=ROTATED_INVENTORY)
     assert api.updates == []
     text = posted[0][1]["text"] if posted else ""
-    assert "rotation sent to its task" not in text
+    assert "rotation update sent" not in text
     assert "rotation update" not in text
 
 
