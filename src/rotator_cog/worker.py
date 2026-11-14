@@ -1264,7 +1264,7 @@ def run_sweep(
                         "rotation update not sent", label, detail=str(exc)[:500]
                     )
                     continue
-                report.updated("rotation sent to its task", label)
+                report.updated("rotation update sent", label)
 
         # 4. Drift between Doppler and the inventory.
         unknown, missing = sweep_mod.drift(store.names(), inventory, config)
